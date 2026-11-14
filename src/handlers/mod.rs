@@ -1,0 +1,17 @@
+pub mod administration;
+pub mod auth;
+pub mod cash_register;
+pub mod financial_operations;
+pub mod health;
+pub mod inventory;
+pub mod product;
+pub mod purchasing;
+pub mod reporting;
+pub mod sales;
+pub mod sales_returns;
+pub mod trading_parties;
+pub mod variant;
+pub mod catalog;
+pub mod expenses;
+pub mod audit;
+pub mod financial_reversals;

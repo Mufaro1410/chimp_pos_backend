@@ -1,0 +1,6614 @@
+openapi: 3.1.0
+info:
+  title: ChimpPOS Backend API
+  version: 1.0.0
+  description: Authentication and desktop administration REST contract. Keep paths, permissions, and schemas synchronized
+    with `src/routes/mod.rs` and `src/models/administration.rs`.
+servers:
+- url: http://127.0.0.1:3000
+security: []
+paths:
+  /api/v1/auth/register:
+    post:
+      summary: Register a company and its first owner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+        '400':
+          $ref: '#/components/responses/AuthError'
+        '409':
+          $ref: '#/components/responses/AuthError'
+  /api/v1/auth/login:
+    post:
+      summary: Authenticate a user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          $ref: '#/components/responses/AuthError'
+  /api/v1/auth/me:
+    get:
+      security:
+      - bearerAuth: []
+      summary: Return authenticated user and company identifiers
+      responses:
+        '200':
+          description: Identity
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - user_id
+                - company_id
+                properties:
+                  user_id:
+                    type: string
+                    format: uuid
+                  company_id:
+                    type: string
+                    format: uuid
+        '401':
+          $ref: '#/components/responses/SecurityError'
+  /api/v1/shop:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: settings.view
+      summary: Get the authenticated user's shop configuration
+      responses:
+        '200':
+          description: Shop
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Shop'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+    put:
+      security:
+      - bearerAuth: []
+      x-required-permission: settings.manage
+      summary: Update shop details using optimistic versioning
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ShopUpdate'
+      responses:
+        '200':
+          description: Updated shop
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Shop'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+  /api/v1/users:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: users.view
+      summary: List shop users (limit defaults to 50; maximum 100)
+      parameters:
+      - in: query
+        name: limit
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 50
+      - in: query
+        name: offset
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+      responses:
+        '200':
+          description: User page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserPage'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+    post:
+      security:
+      - bearerAuth: []
+      x-required-permission: users.manage
+      summary: Create an active shop user and assign initial roles
+      description: Accepts an administrator-provided temporary password. No invitation or password-reset delivery
+        flow is implemented yet.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserCreate'
+      responses:
+        '201':
+          description: Created user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedUser'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+  /api/v1/users/{id}:
+    parameters:
+    - $ref: '#/components/parameters/UuidPath'
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: users.view
+      summary: Get a shop user without authentication secrets
+      responses:
+        '200':
+          description: User
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedUser'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+    put:
+      security:
+      - bearerAuth: []
+      x-required-permission: users.manage
+      summary: Update user profile or activate/deactivate account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserUpdate'
+      responses:
+        '200':
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedUser'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+  /api/v1/users/{id}/roles:
+    put:
+      security:
+      - bearerAuth: []
+      x-required-permission: roles.manage
+      summary: Replace a user's role assignments within the authenticated shop
+      parameters:
+      - $ref: '#/components/parameters/UuidPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserRoleUpdate'
+      responses:
+        '200':
+          description: Updated user and roles
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedUser'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+  /api/v1/roles:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: roles.view
+      summary: List shop roles with assigned permissions
+      responses:
+        '200':
+          description: Roles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Role'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+  /api/v1/roles/{id}:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: roles.view
+      summary: Get a role and its permissions
+      parameters:
+      - $ref: '#/components/parameters/UuidPath'
+      responses:
+        '200':
+          description: Role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Role'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+  /api/v1/roles/{id}/permissions:
+    put:
+      security:
+      - bearerAuth: []
+      x-required-permission: roles.manage
+      summary: Replace permissions on a custom role; built-in roles are immutable
+      parameters:
+      - $ref: '#/components/parameters/UuidPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RolePermissionUpdate'
+      responses:
+        '200':
+          description: Updated role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Role'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+  /api/v1/permissions:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: roles.view
+      summary: List assignable permission catalogue entries
+      responses:
+        '200':
+          description: Permissions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Permission'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+  /api/v1/customers/{id}/account:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: customers.view
+      summary: Get derived customer receivable balance in company base currency
+      parameters:
+      - $ref: '#/components/parameters/PartyIdPath'
+      responses:
+        '200':
+          description: Account balance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountBalance'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+  /api/v1/customers/{id}/statement:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: customers.view
+      summary: Get paginated customer account activity with running balance
+      parameters:
+      - $ref: '#/components/parameters/PartyIdPath'
+      - $ref: '#/components/parameters/PageLimit'
+      - $ref: '#/components/parameters/PageOffset'
+      responses:
+        '200':
+          description: Statement page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatementPage'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+  /api/v1/customers/{id}/outstanding-sales:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: customers.view
+      summary: List outstanding completed customer sales
+      parameters:
+      - $ref: '#/components/parameters/PartyIdPath'
+      - $ref: '#/components/parameters/PageLimit'
+      - $ref: '#/components/parameters/PageOffset'
+      responses:
+        '200':
+          description: Outstanding sale page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutstandingPage'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+  /api/v1/customers/{id}/payments:
+    post:
+      security:
+      - bearerAuth: []
+      x-required-permission: customers.payment
+      summary: Post customer receipt and optional multi-sale allocations atomically
+      parameters:
+      - $ref: '#/components/parameters/PartyIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentCreate'
+      responses:
+        '201':
+          description: Posted receipt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostingResult'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+  /api/v1/customers/{id}/credit-notes:
+    post:
+      security:
+      - bearerAuth: []
+      x-required-permission: customers.credit
+      summary: Post customer credit note against receivable (optionally linked to a sale)
+      parameters:
+      - $ref: '#/components/parameters/PartyIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreditNoteCreate'
+      responses:
+        '201':
+          description: Posted credit note
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostingResult'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+  /api/v1/suppliers/{id}/account:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: suppliers.view
+      summary: Get derived supplier payable balance in base currency
+      parameters:
+      - $ref: '#/components/parameters/PartyIdPath'
+      responses:
+        '200':
+          description: Account balance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountBalance'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+  /api/v1/suppliers/{id}/statement:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: suppliers.view
+      summary: Get paginated supplier account activity with running balance
+      parameters:
+      - $ref: '#/components/parameters/PartyIdPath'
+      - $ref: '#/components/parameters/PageLimit'
+      - $ref: '#/components/parameters/PageOffset'
+      responses:
+        '200':
+          description: Statement page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatementPage'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+  /api/v1/suppliers/{id}/outstanding-invoices:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: suppliers.view
+      summary: List outstanding posted supplier invoices
+      parameters:
+      - $ref: '#/components/parameters/PartyIdPath'
+      - $ref: '#/components/parameters/PageLimit'
+      - $ref: '#/components/parameters/PageOffset'
+      responses:
+        '200':
+          description: Outstanding invoice page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutstandingPage'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+  /api/v1/suppliers/{id}/invoices:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: suppliers.view
+      summary: List supplier invoices
+      parameters:
+      - $ref: '#/components/parameters/PartyIdPath'
+      - $ref: '#/components/parameters/PageLimit'
+      - $ref: '#/components/parameters/PageOffset'
+      responses:
+        '200':
+          description: Invoice page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvoicePage'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+    post:
+      security:
+      - bearerAuth: []
+      x-required-permission: suppliers.invoice
+      summary: Create and post a supplier invoice atomically
+      description: Invoices are base currency only until supplier payment currency is persisted by a reviewed migration.
+        A purchase order or receipt does not create the payable.
+      parameters:
+      - $ref: '#/components/parameters/PartyIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SupplierInvoiceCreate'
+      responses:
+        '201':
+          description: Posted supplier invoice
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupplierInvoice'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+  /api/v1/supplier-invoices/{id}:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: suppliers.view
+      summary: Get supplier invoice and line snapshots
+      parameters:
+      - $ref: '#/components/parameters/PartyIdPath'
+      responses:
+        '200':
+          description: Invoice
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupplierInvoice'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+  /api/v1/suppliers/{id}/payments:
+    post:
+      security:
+      - bearerAuth: []
+      x-required-permission: suppliers.payment
+      summary: Post supplier payment and optional multi-invoice allocations atomically
+      parameters:
+      - $ref: '#/components/parameters/PartyIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentCreate'
+      responses:
+        '201':
+          description: Posted supplier payment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostingResult'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+  /api/v1/suppliers/{id}/credit-notes:
+    post:
+      security:
+      - bearerAuth: []
+      x-required-permission: suppliers.invoice
+      summary: Post supplier credit note against a posted invoice
+      parameters:
+      - $ref: '#/components/parameters/PartyIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreditNoteCreate'
+      responses:
+        '201':
+          description: Posted credit note
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostingResult'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+  /api/v1/reports/dashboard:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: reports.view
+      summary: Company dashboard totals and recent activity
+      parameters:
+      - $ref: '#/components/parameters/LowStockThreshold'
+      responses:
+        '200':
+          description: Report result; monetary values are decimal strings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportObject'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+  /api/v1/reports/sales/summary:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: reports.view
+      summary: Gross and net sales with daily, weekly or monthly breakdown
+      parameters:
+      - $ref: '#/components/parameters/FromDate'
+      - $ref: '#/components/parameters/ToDate'
+      - $ref: '#/components/parameters/SalesInterval'
+      responses:
+        '200':
+          description: Report result; monetary values are decimal strings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportObject'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+  /api/v1/reports/sales/by-product:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: reports.view
+      summary: Sales grouped by sale-line variant
+      parameters:
+      - $ref: '#/components/parameters/FromDate'
+      - $ref: '#/components/parameters/ToDate'
+      - $ref: '#/components/parameters/PageLimit'
+      - $ref: '#/components/parameters/PageOffset'
+      responses:
+        '200':
+          description: Report result; monetary values are decimal strings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportPage'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+  /api/v1/reports/sales/by-category:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: reports.view
+      summary: Sales grouped by current product category
+      parameters:
+      - $ref: '#/components/parameters/FromDate'
+      - $ref: '#/components/parameters/ToDate'
+      - $ref: '#/components/parameters/PageLimit'
+      - $ref: '#/components/parameters/PageOffset'
+      responses:
+        '200':
+          description: Report result; monetary values are decimal strings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportPage'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+  /api/v1/reports/sales/by-payment-method:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: reports.view
+      summary: Checkout payments grouped by method
+      parameters:
+      - $ref: '#/components/parameters/FromDate'
+      - $ref: '#/components/parameters/ToDate'
+      responses:
+        '200':
+          description: Report result; monetary values are decimal strings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportObject'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+  /api/v1/reports/sales/transactions:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: reports.view
+      summary: Paginated sale history with status, location and payment filters
+      parameters:
+      - $ref: '#/components/parameters/FromDate'
+      - $ref: '#/components/parameters/ToDate'
+      - $ref: '#/components/parameters/PageLimit'
+      - $ref: '#/components/parameters/PageOffset'
+      - $ref: '#/components/parameters/SaleStatus'
+      - $ref: '#/components/parameters/LocationId'
+      - $ref: '#/components/parameters/PaymentMethod'
+      responses:
+        '200':
+          description: Report result; monetary values are decimal strings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportPage'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+  /api/v1/reports/sales/returns:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: reports.view
+      summary: Return, refund and void event totals
+      parameters:
+      - $ref: '#/components/parameters/FromDate'
+      - $ref: '#/components/parameters/ToDate'
+      responses:
+        '200':
+          description: Report result; monetary values are decimal strings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportObject'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+  /api/v1/reports/sales/gross-profit:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: reports.view
+      summary: Gross profit availability; historical cost is not stored on sale lines
+      parameters:
+      - $ref: '#/components/parameters/FromDate'
+      - $ref: '#/components/parameters/ToDate'
+      responses:
+        '501':
+          description: Not available because historical sale cost is missing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+  /api/v1/reports/inventory/stock:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: reports.view
+      summary: Current stock by product variant; low status requires a supplied threshold
+      parameters:
+      - $ref: '#/components/parameters/PageLimit'
+      - $ref: '#/components/parameters/PageOffset'
+      - $ref: '#/components/parameters/LocationId'
+      - $ref: '#/components/parameters/StockStatus'
+      - $ref: '#/components/parameters/LowStockThreshold'
+      responses:
+        '200':
+          description: Report result; monetary values are decimal strings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportPage'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+  /api/v1/reports/inventory/valuation:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: reports.view
+      summary: Current stock valuation at current variant cost price
+      parameters:
+      - $ref: '#/components/parameters/LocationId'
+      responses:
+        '200':
+          description: Report result; monetary values are decimal strings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportObject'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+  /api/v1/reports/inventory/movements:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: reports.view
+      summary: Paginated stock movement history
+      parameters:
+      - $ref: '#/components/parameters/FromDate'
+      - $ref: '#/components/parameters/ToDate'
+      - $ref: '#/components/parameters/PageLimit'
+      - $ref: '#/components/parameters/PageOffset'
+      - $ref: '#/components/parameters/LocationId'
+      - $ref: '#/components/parameters/VariantId'
+      responses:
+        '200':
+          description: Report result; monetary values are decimal strings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportPage'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+  /api/v1/reports/inventory/activity:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: reports.view
+      summary: Stock received and sold from stock movement events
+      parameters:
+      - $ref: '#/components/parameters/FromDate'
+      - $ref: '#/components/parameters/ToDate'
+      - $ref: '#/components/parameters/LocationId'
+      responses:
+        '200':
+          description: Report result; monetary values are decimal strings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportObject'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+  /api/v1/reports/purchasing/summary:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: reports.view
+      summary: Purchase orders, goods receipts, and posted supplier invoices
+      parameters:
+      - $ref: '#/components/parameters/FromDate'
+      - $ref: '#/components/parameters/ToDate'
+      responses:
+        '200':
+          description: Report result; monetary values are decimal strings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportObject'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+  /api/v1/reports/purchasing/by-supplier:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: reports.view
+      summary: Purchasing activity grouped by supplier
+      parameters:
+      - $ref: '#/components/parameters/FromDate'
+      - $ref: '#/components/parameters/ToDate'
+      - $ref: '#/components/parameters/PageLimit'
+      - $ref: '#/components/parameters/PageOffset'
+      responses:
+        '200':
+          description: Report result; monetary values are decimal strings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportPage'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+  /api/v1/reports/purchasing/goods-received:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: reports.view
+      summary: Paginated goods receipt events linked to suppliers and purchase orders
+      parameters:
+      - $ref: '#/components/parameters/FromDate'
+      - $ref: '#/components/parameters/ToDate'
+      - $ref: '#/components/parameters/PageLimit'
+      - $ref: '#/components/parameters/PageOffset'
+      responses:
+        '200':
+          description: Report result; monetary values are decimal strings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportPage'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+  /api/v1/reports/purchasing/outstanding-orders:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: reports.view
+      summary: Ordered and partially received purchase orders
+      parameters:
+      - $ref: '#/components/parameters/PageLimit'
+      - $ref: '#/components/parameters/PageOffset'
+      responses:
+        '200':
+          description: Report result; monetary values are decimal strings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportPage'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+  /api/v1/reports/suppliers/{id}/purchase-history:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: reports.view
+      summary: Purchase orders and posted invoices for one supplier
+      parameters:
+      - $ref: '#/components/parameters/PartyIdPath'
+      - $ref: '#/components/parameters/FromDate'
+      - $ref: '#/components/parameters/ToDate'
+      - $ref: '#/components/parameters/PageLimit'
+      - $ref: '#/components/parameters/PageOffset'
+      responses:
+        '200':
+          description: Report result; monetary values are decimal strings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportPage'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+  /api/v1/reports/cash/registers:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: reports.view
+      summary: Cash registers and their currently open sessions
+      responses:
+        '200':
+          description: Report result; monetary values are decimal strings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportArray'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+  /api/v1/reports/cash/sessions:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: reports.view
+      summary: Session opening, expected and counted cash, sales, refunds and payments
+      parameters:
+      - $ref: '#/components/parameters/FromDate'
+      - $ref: '#/components/parameters/ToDate'
+      - $ref: '#/components/parameters/PageLimit'
+      - $ref: '#/components/parameters/PageOffset'
+      responses:
+        '200':
+          description: Report result; monetary values are decimal strings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportPage'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+  /api/v1/reports/cash/movements:
+    get:
+      security:
+      - bearerAuth: []
+      x-required-permission: reports.view
+      summary: Paginated manual cash movement history
+      parameters:
+      - $ref: '#/components/parameters/FromDate'
+      - $ref: '#/components/parameters/ToDate'
+      - $ref: '#/components/parameters/PageLimit'
+      - $ref: '#/components/parameters/PageOffset'
+      responses:
+        '200':
+          description: Report result; monetary values are decimal strings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportPage'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+  /api/v1/products/{id}:
+    delete:
+      summary: Deactivate a product
+      description: Company-scoped operation.
+      responses:
+        '204':
+          description: Successful response with no body.
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: products.archive
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+    get:
+      summary: Get a product and its variants
+      description: Company-scoped operation.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+              example:
+                id: 1
+                name: Example product
+                description: Example description
+                category_id: 1
+                track_inventory: true
+                is_active: true
+                version: 1
+                variants:
+                - id: 1
+                  name: Example product
+                  sku: SKU-001
+                  barcode: '1234567890123'
+                  unit_id: 1
+                  unit_code: ea
+                  unit_name: Each
+                  unit_symbol: ea
+                  selling_price: 12.5
+                  cost_price: 12.5
+                  is_default: true
+                  is_active: true
+                  version: 1
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: products.view
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+    put:
+      summary: Update a product and its default variant
+      description: Company-scoped operation.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+              example:
+                id: 1
+                name: Example product
+                description: Example description
+                category_id: 1
+                track_inventory: true
+                is_active: true
+                version: 1
+                variants:
+                - id: 1
+                  name: Example product
+                  sku: SKU-001
+                  barcode: '1234567890123'
+                  unit_id: 1
+                  unit_code: ea
+                  unit_name: Each
+                  unit_symbol: ea
+                  selling_price: 12.5
+                  cost_price: 12.5
+                  is_default: true
+                  is_active: true
+                  version: 1
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: products.update
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProductRequest'
+            example:
+              name: Example product
+              description: Example description
+              category_id: 1
+              track_inventory: true
+              variant:
+                name: Example product
+                sku: SKU-001
+                barcode: '1234567890123'
+                unit_id: 1
+                selling_price: 12.5
+                cost_price: 12.5
+  /api/v1/products/{product_id}/variants/{variant_id}:
+    delete:
+      summary: Deactivate a product variant
+      description: Company-scoped operation.
+      responses:
+        '204':
+          description: Successful response with no body.
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: products.archive
+      parameters:
+      - in: path
+        name: product_id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+      - in: path
+        name: variant_id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+    put:
+      summary: Update a product variant using its expected version
+      description: Company-scoped operation.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductVariant'
+              example:
+                id: 1
+                name: Example product
+                sku: SKU-001
+                barcode: '1234567890123'
+                unit_id: 1
+                unit_code: ea
+                unit_name: Each
+                unit_symbol: ea
+                selling_price: 12.5
+                cost_price: 12.5
+                is_default: true
+                is_active: true
+                version: 1
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: products.update
+      parameters:
+      - in: path
+        name: product_id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+      - in: path
+        name: variant_id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProductVariantRequest'
+            example:
+              name: Example product
+              sku: SKU-001
+              barcode: '1234567890123'
+              unit_id: 1
+              selling_price: 12.5
+              cost_price: 12.5
+              expected_version: 1
+  /api/v1/cash-registers:
+    get:
+      summary: List cash registers
+      description: Company-scoped. Optional location_id filter; this endpoint is not paginated.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CashRegister'
+              example:
+              - id: 1
+                location_id: 1
+                code: TILL-01
+                name: Example product
+                is_active: true
+                created_at: '2026-11-12T10:30:00Z'
+                updated_at: '2026-11-12T10:30:00Z'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: cash_register.view
+    post:
+      summary: Create a cash register
+      description: Company-scoped. Creates a cash register.
+      responses:
+        '201':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CashRegister'
+              example:
+                id: 1
+                location_id: 1
+                code: TILL-01
+                name: Example product
+                is_active: true
+                created_at: '2026-11-12T10:30:00Z'
+                updated_at: '2026-11-12T10:30:00Z'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: cash_register.manage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCashRegisterRequest'
+            example:
+              location_id: 1
+              code: TILL-01
+              name: Example product
+  /api/v1/cash-registers/{register_id}/sessions/open:
+    get:
+      summary: Get the open session for a register
+      description: Company-scoped operation.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CashRegisterSession'
+              example:
+                id: 1
+                register_id: 1
+                location_id: 1
+                status: draft
+                opening_float: 12.5
+                opening_notes: Example
+                opened_by: 00000000-0000-0000-0000-000000000001
+                opened_at: '2026-11-12T10:30:00Z'
+                closed_by: 00000000-0000-0000-0000-000000000001
+                closed_at: '2026-11-12T10:30:00Z'
+                expected_cash: 12.5
+                closing_cash_count: 12.5
+                cash_variance: 12.5
+                closing_notes: Example
+                version: 1
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: cash_register.view
+      parameters:
+      - in: path
+        name: register_id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+  /api/v1/cash-sessions/{session_id}:
+    get:
+      summary: Get a cash session
+      description: Company-scoped operation.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CashRegisterSession'
+              example:
+                id: 1
+                register_id: 1
+                location_id: 1
+                status: draft
+                opening_float: 12.5
+                opening_notes: Example
+                opened_by: 00000000-0000-0000-0000-000000000001
+                opened_at: '2026-11-12T10:30:00Z'
+                closed_by: 00000000-0000-0000-0000-000000000001
+                closed_at: '2026-11-12T10:30:00Z'
+                expected_cash: 12.5
+                closing_cash_count: 12.5
+                cash_variance: 12.5
+                closing_notes: Example
+                version: 1
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: cash_register.view
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+  /api/v1/cash-sessions/{session_id}/movements:
+    get:
+      summary: List manual movements for a cash session
+      description: Company-scoped operation.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CashMovement'
+              example:
+              - id: 1
+                register_session_id: 1
+                movement_type: adjustment_in
+                amount: 12.5
+                reference: REF-1001
+                notes: Example note
+                created_by: 00000000-0000-0000-0000-000000000001
+                created_at: '2026-11-12T10:30:00Z'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: cash_register.view
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+    post:
+      summary: Record an idempotent manual cash movement
+      description: Company-scoped operation.
+      responses:
+        '201':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CashMovement'
+              example:
+                id: 1
+                register_session_id: 1
+                movement_type: adjustment_in
+                amount: 12.5
+                reference: REF-1001
+                notes: Example note
+                created_by: 00000000-0000-0000-0000-000000000001
+                created_at: '2026-11-12T10:30:00Z'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: cash_register.movement
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CashMovementRequest'
+            example:
+              movement_type: cash_in
+              amount: 12.5
+              reference: REF-1001
+              notes: Example note
+              idempotency_key: 00000000-0000-0000-0000-000000000001
+  /api/v1/cash-sessions/{session_id}/summary:
+    get:
+      summary: Get cash session totals and expected cash
+      description: Company-scoped operation.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CashSessionSummary'
+              example:
+                session:
+                  id: 1
+                  register_id: 1
+                  location_id: 1
+                  status: draft
+                  opening_float: 12.5
+                  opening_notes: Example
+                  opened_by: 00000000-0000-0000-0000-000000000001
+                  opened_at: '2026-11-12T10:30:00Z'
+                  closed_by: 00000000-0000-0000-0000-000000000001
+                  closed_at: '2026-11-12T10:30:00Z'
+                  expected_cash: 12.5
+                  closing_cash_count: 12.5
+                  cash_variance: 12.5
+                  closing_notes: Example
+                  version: 1
+                total_cash_sales: 12.5
+                total_cash_refunds: 12.5
+                total_customer_receipts: 12.5
+                total_supplier_payments: 12.5
+                total_customer_payment_reversals: 12.5
+                total_supplier_payment_reversals: 12.5
+                total_cash_in: 12.5
+                total_cash_out: 12.5
+                total_paid_out: 12.5
+                total_cash_drops: 12.5
+                calculated_expected_cash: 12.5
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: cash_register.view
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+  /api/v1/customers:
+    get:
+      summary: List company customers
+      description: Company-scoped. Returns every company customer; this endpoint has no query filters or pagination.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Customer'
+              example:
+              - id: 1
+                customer_number: 1
+                currency_code: USD
+                name: Example product
+                email: Example
+                phone: '+263771234567'
+                address: 1 Example Road
+                tax_number: TAX-001
+                notes: Example note
+                credit_enabled: true
+                credit_limit: 12.5
+                payment_terms_days: 1
+                is_active: true
+                created_at: '2026-11-12T10:30:00Z'
+                updated_at: '2026-11-12T10:30:00Z'
+                version: 1
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: customers.view
+    post:
+      summary: Create a customer
+      description: Company-scoped. Creates a customer in the authenticated company.
+      responses:
+        '201':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Customer'
+              example:
+                id: 1
+                customer_number: 1
+                currency_code: USD
+                name: Example product
+                email: Example
+                phone: '+263771234567'
+                address: 1 Example Road
+                tax_number: TAX-001
+                notes: Example note
+                credit_enabled: true
+                credit_limit: 12.5
+                payment_terms_days: 1
+                is_active: true
+                created_at: '2026-11-12T10:30:00Z'
+                updated_at: '2026-11-12T10:30:00Z'
+                version: 1
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: customers.profile.manage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerCreate'
+            example:
+              name: Example product
+              email: Example
+              phone: '+263771234567'
+              address: 1 Example Road
+              tax_number: TAX-001
+              notes: Example note
+  /api/v1/inventory/movements:
+    get:
+      summary: List paginated stock movements
+      description: Company-scoped. Optional location_id and variant_id filters; limit defaults to 50 and is clamped
+        to 1–100; offset defaults to 0 and is clamped to 0 or greater.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StockMovement'
+              example:
+              - id: 1
+                location_id: 1
+                variant_id: 1
+                movement_type: adjustment_in
+                quantity_delta: 12.5
+                reference_type: Example
+                reference_id: Example
+                notes: Example note
+                created_by: 00000000-0000-0000-0000-000000000001
+                created_at: '2026-11-12T10:30:00Z'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: inventory.view
+  /api/v1/inventory/stock:
+    get:
+      summary: List current stock balances
+      description: Company-scoped. Optional location_id and variant_id filters are applied; this endpoint is not
+        paginated.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StockItem'
+              example:
+              - location_id: 1
+                location_name: Example
+                variant_id: 1
+                product_id: 1
+                product_name: Example
+                variant_name: Example
+                sku: SKU-001
+                barcode: '1234567890123'
+                unit_code: ea
+                unit_name: Each
+                quantity_on_hand: 12.5
+                reserved_quantity: 12.5
+                available_quantity: 12.5
+                version: 1
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: inventory.view
+  /api/v1/products:
+    get:
+      summary: List company products
+      description: Company-scoped. Returns every company product; this endpoint has no query filters or pagination.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Product'
+              example:
+              - id: 1
+                name: Example product
+                description: Example description
+                category_id: 1
+                track_inventory: true
+                is_active: true
+                version: 1
+                variants:
+                - id: 1
+                  name: Example product
+                  sku: SKU-001
+                  barcode: '1234567890123'
+                  unit_id: 1
+                  unit_code: ea
+                  unit_name: Each
+                  unit_symbol: ea
+                  selling_price: 12.5
+                  cost_price: 12.5
+                  is_default: true
+                  is_active: true
+                  version: 1
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: products.view
+    post:
+      summary: Create a product and its first variant
+      description: Company-scoped. Creates a product and its first variant.
+      responses:
+        '201':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+              example:
+                id: 1
+                name: Example product
+                description: Example description
+                category_id: 1
+                track_inventory: true
+                is_active: true
+                version: 1
+                variants:
+                - id: 1
+                  name: Example product
+                  sku: SKU-001
+                  barcode: '1234567890123'
+                  unit_id: 1
+                  unit_code: ea
+                  unit_name: Each
+                  unit_symbol: ea
+                  selling_price: 12.5
+                  cost_price: 12.5
+                  is_default: true
+                  is_active: true
+                  version: 1
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: products.create
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProductRequest'
+            example:
+              name: Example product
+              description: Example description
+              category_id: 1
+              track_inventory: true
+              variant:
+                name: Example product
+                sku: SKU-001
+                barcode: '1234567890123'
+                unit_id: 1
+                selling_price: 12.5
+                cost_price: 12.5
+  /api/v1/products/{product_id}/variants:
+    get:
+      summary: List a product's variants
+      description: Company-scoped operation.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProductVariant'
+              example:
+              - id: 1
+                name: Example product
+                sku: SKU-001
+                barcode: '1234567890123'
+                unit_id: 1
+                unit_code: ea
+                unit_name: Each
+                unit_symbol: ea
+                selling_price: 12.5
+                cost_price: 12.5
+                is_default: true
+                is_active: true
+                version: 1
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: products.view
+      parameters:
+      - in: path
+        name: product_id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+    post:
+      summary: Create a variant for a product
+      description: Company-scoped operation.
+      responses:
+        '201':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductVariant'
+              example:
+                id: 1
+                name: Example product
+                sku: SKU-001
+                barcode: '1234567890123'
+                unit_id: 1
+                unit_code: ea
+                unit_name: Each
+                unit_symbol: ea
+                selling_price: 12.5
+                cost_price: 12.5
+                is_default: true
+                is_active: true
+                version: 1
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: products.create
+      parameters:
+      - in: path
+        name: product_id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductVariantRequest'
+            example:
+              name: Example product
+              sku: SKU-001
+              barcode: '1234567890123'
+              unit_id: 1
+              selling_price: 12.5
+              cost_price: 12.5
+  /api/v1/purchases:
+    get:
+      summary: List purchase orders
+      description: Company-scoped. Optional supplier_id and status filters; status values are draft, ordered, partially_received,
+        received, cancelled; limit defaults to 50 and is clamped to 1–100; offset defaults to 0 and is clamped to
+        0 or greater.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PurchaseOrder'
+              example:
+              - id: 1
+                order_number: 1
+                supplier_id: 1
+                supplier_name: Example
+                status: draft
+                order_date: '2026-11-12'
+                expected_delivery_date: '2026-11-12'
+                subtotal: 12.5
+                tax_total: 12.5
+                discount_total: 12.5
+                total_amount: 12.5
+                notes: Example note
+                created_at: '2026-11-12T10:30:00Z'
+                version: 1
+                items:
+                - id: 1
+                  variant_id: 1
+                  product_name: Example
+                  variant_name: Example
+                  sku: SKU-001
+                  unit_code: ea
+                  unit_name: Each
+                  ordered_quantity: 12.5
+                  received_quantity: 12.5
+                  outstanding_quantity: 12.5
+                  unit_cost: 12.5
+                  line_total: 12.5
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: purchases.view
+    post:
+      summary: Create a draft purchase order
+      description: Company-scoped. Creates a draft purchase order.
+      responses:
+        '201':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrder'
+              example:
+                id: 1
+                order_number: 1
+                supplier_id: 1
+                supplier_name: Example
+                status: draft
+                order_date: '2026-11-12'
+                expected_delivery_date: '2026-11-12'
+                subtotal: 12.5
+                tax_total: 12.5
+                discount_total: 12.5
+                total_amount: 12.5
+                notes: Example note
+                created_at: '2026-11-12T10:30:00Z'
+                version: 1
+                items:
+                - id: 1
+                  variant_id: 1
+                  product_name: Example
+                  variant_name: Example
+                  sku: SKU-001
+                  unit_code: ea
+                  unit_name: Each
+                  ordered_quantity: 12.5
+                  received_quantity: 12.5
+                  outstanding_quantity: 12.5
+                  unit_cost: 12.5
+                  line_total: 12.5
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: purchases.create
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePurchaseOrderRequest'
+            example:
+              supplier_id: 1
+              order_date: '2026-11-12'
+              expected_delivery_date: '2026-11-12'
+              tax_total: 12.5
+              discount_total: 12.5
+              notes: Example note
+              items:
+              - variant_id: 1
+                ordered_quantity: 12.5
+                unit_cost: 12.5
+  /api/v1/purchases/{id}:
+    get:
+      summary: Get a purchase order
+      description: Company-scoped operation.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrder'
+              example:
+                id: 1
+                order_number: 1
+                supplier_id: 1
+                supplier_name: Example
+                status: draft
+                order_date: '2026-11-12'
+                expected_delivery_date: '2026-11-12'
+                subtotal: 12.5
+                tax_total: 12.5
+                discount_total: 12.5
+                total_amount: 12.5
+                notes: Example note
+                created_at: '2026-11-12T10:30:00Z'
+                version: 1
+                items:
+                - id: 1
+                  variant_id: 1
+                  product_name: Example
+                  variant_name: Example
+                  sku: SKU-001
+                  unit_code: ea
+                  unit_name: Each
+                  ordered_quantity: 12.5
+                  received_quantity: 12.5
+                  outstanding_quantity: 12.5
+                  unit_cost: 12.5
+                  line_total: 12.5
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: purchases.view
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+    put:
+      summary: Update an editable purchase order
+      description: Company-scoped operation.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrder'
+              example:
+                id: 1
+                order_number: 1
+                supplier_id: 1
+                supplier_name: Example
+                status: draft
+                order_date: '2026-11-12'
+                expected_delivery_date: '2026-11-12'
+                subtotal: 12.5
+                tax_total: 12.5
+                discount_total: 12.5
+                total_amount: 12.5
+                notes: Example note
+                created_at: '2026-11-12T10:30:00Z'
+                version: 1
+                items:
+                - id: 1
+                  variant_id: 1
+                  product_name: Example
+                  variant_name: Example
+                  sku: SKU-001
+                  unit_code: ea
+                  unit_name: Each
+                  ordered_quantity: 12.5
+                  received_quantity: 12.5
+                  outstanding_quantity: 12.5
+                  unit_cost: 12.5
+                  line_total: 12.5
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: purchases.update
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePurchaseOrderRequest'
+            example:
+              expected_version: 1
+              supplier_id: 1
+              order_date: '2026-11-12'
+              expected_delivery_date: '2026-11-12'
+              tax_total: 12.5
+              discount_total: 12.5
+              notes: Example note
+              items:
+              - variant_id: 1
+                ordered_quantity: 12.5
+                unit_cost: 12.5
+  /api/v1/purchases/{id}/receipts:
+    get:
+      summary: List goods receipts for a purchase order
+      description: Company-scoped. Lists receipts belonging to this company-scoped purchase order.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/GoodsReceipt'
+              example:
+              - id: 1
+                receipt_number: 1
+                purchase_order_id: 1
+                location_id: 1
+                received_by: 00000000-0000-0000-0000-000000000001
+                notes: Example note
+                received_at: '2026-11-12T10:30:00Z'
+                items:
+                - id: 1
+                  purchase_order_item_id: 1
+                  quantity_received: 12.5
+                  unit_cost: 12.5
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: purchases.view
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+    post:
+      summary: Receive goods against a purchase order
+      description: Company-scoped. A new goods receipt responds 201; an idempotent replay responds 200.
+      responses:
+        '201':
+          description: Resource created.
+          content: &id001
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoodsReceipt'
+              example:
+                id: 1
+                receipt_number: 1
+                purchase_order_id: 1
+                location_id: 1
+                received_by: 00000000-0000-0000-0000-000000000001
+                notes: Example note
+                received_at: '2026-11-12T10:30:00Z'
+                items:
+                - id: 1
+                  purchase_order_item_id: 1
+                  quantity_received: 12.5
+                  unit_cost: 12.5
+        '200':
+          description: Idempotent replay returns the previously posted resource.
+          content: *id001
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: purchases.receive
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReceiveGoodsRequest'
+            example:
+              location_id: 1
+              idempotency_key: 00000000-0000-0000-0000-000000000001
+              notes: Example note
+              items:
+              - purchase_order_item_id: 1
+                quantity_received: 12.5
+                unit_cost: 12.5
+  /api/v1/sales:
+    get:
+      summary: List sales
+      description: Company-scoped. Optional status (draft, completed, cancelled) and location_id filters; limit
+        defaults to 50 and is clamped to 1–100; offset defaults to 0 and is clamped to 0 or greater.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Sale'
+              example:
+              - id: 1
+                sale_number: 1
+                location_id: 1
+                customer_id: 1
+                status: draft
+                currency_code: USD
+                subtotal: 12.5
+                discount_total: 12.5
+                tax_total: 12.5
+                total_amount: 12.5
+                notes: Example note
+                created_by: 00000000-0000-0000-0000-000000000001
+                completed_by: 00000000-0000-0000-0000-000000000001
+                completed_at: '2026-11-12T10:30:00Z'
+                created_at: '2026-11-12T10:30:00Z'
+                version: 1
+                items:
+                - id: 1
+                  variant_id: 1
+                  product_name: Example
+                  variant_name: Example
+                  sku: SKU-001
+                  barcode: '1234567890123'
+                  unit_code: ea
+                  unit_name: Each
+                  quantity: 12.5
+                  unit_price: 12.5
+                  discount_amount: 12.5
+                  tax_rate: 12.5
+                  tax_amount: 12.5
+                  line_subtotal: 12.5
+                  line_total: 12.5
+                payments:
+                - id: 1
+                  payment_method: card
+                  currency_code: USD
+                  amount: 12.5
+                  tendered_amount: 12.5
+                  change_given: 12.5
+                  reference: REF-1001
+                  notes: Example note
+                  received_by: 00000000-0000-0000-0000-000000000001
+                  created_at: '2026-11-12T10:30:00Z'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: sales.view
+    post:
+      summary: Create a draft sale
+      description: Company-scoped. Creates a draft sale.
+      responses:
+        '201':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sale'
+              example:
+                id: 1
+                sale_number: 1
+                location_id: 1
+                customer_id: 1
+                status: draft
+                currency_code: USD
+                subtotal: 12.5
+                discount_total: 12.5
+                tax_total: 12.5
+                total_amount: 12.5
+                notes: Example note
+                created_by: 00000000-0000-0000-0000-000000000001
+                completed_by: 00000000-0000-0000-0000-000000000001
+                completed_at: '2026-11-12T10:30:00Z'
+                created_at: '2026-11-12T10:30:00Z'
+                version: 1
+                items:
+                - id: 1
+                  variant_id: 1
+                  product_name: Example
+                  variant_name: Example
+                  sku: SKU-001
+                  barcode: '1234567890123'
+                  unit_code: ea
+                  unit_name: Each
+                  quantity: 12.5
+                  unit_price: 12.5
+                  discount_amount: 12.5
+                  tax_rate: 12.5
+                  tax_amount: 12.5
+                  line_subtotal: 12.5
+                  line_total: 12.5
+                payments:
+                - id: 1
+                  payment_method: card
+                  currency_code: USD
+                  amount: 12.5
+                  tendered_amount: 12.5
+                  change_given: 12.5
+                  reference: REF-1001
+                  notes: Example note
+                  received_by: 00000000-0000-0000-0000-000000000001
+                  created_at: '2026-11-12T10:30:00Z'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: sales.create
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSaleRequest'
+            example:
+              location_id: 1
+              customer_id: 1
+              notes: Example note
+              items:
+              - variant_id: 1
+                quantity: 12.5
+                unit_price: 12.5
+                discount_amount: 12.5
+                tax_rate: 12.5
+  /api/v1/sales/{id}:
+    get:
+      summary: Get a sale
+      description: Company-scoped operation.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sale'
+              example:
+                id: 1
+                sale_number: 1
+                location_id: 1
+                customer_id: 1
+                status: draft
+                currency_code: USD
+                subtotal: 12.5
+                discount_total: 12.5
+                tax_total: 12.5
+                total_amount: 12.5
+                notes: Example note
+                created_by: 00000000-0000-0000-0000-000000000001
+                completed_by: 00000000-0000-0000-0000-000000000001
+                completed_at: '2026-11-12T10:30:00Z'
+                created_at: '2026-11-12T10:30:00Z'
+                version: 1
+                items:
+                - id: 1
+                  variant_id: 1
+                  product_name: Example
+                  variant_name: Example
+                  sku: SKU-001
+                  barcode: '1234567890123'
+                  unit_code: ea
+                  unit_name: Each
+                  quantity: 12.5
+                  unit_price: 12.5
+                  discount_amount: 12.5
+                  tax_rate: 12.5
+                  tax_amount: 12.5
+                  line_subtotal: 12.5
+                  line_total: 12.5
+                payments:
+                - id: 1
+                  payment_method: card
+                  currency_code: USD
+                  amount: 12.5
+                  tendered_amount: 12.5
+                  change_given: 12.5
+                  reference: REF-1001
+                  notes: Example note
+                  received_by: 00000000-0000-0000-0000-000000000001
+                  created_at: '2026-11-12T10:30:00Z'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: sales.view
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+    put:
+      summary: Update an editable sale
+      description: Company-scoped operation.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sale'
+              example:
+                id: 1
+                sale_number: 1
+                location_id: 1
+                customer_id: 1
+                status: draft
+                currency_code: USD
+                subtotal: 12.5
+                discount_total: 12.5
+                tax_total: 12.5
+                total_amount: 12.5
+                notes: Example note
+                created_by: 00000000-0000-0000-0000-000000000001
+                completed_by: 00000000-0000-0000-0000-000000000001
+                completed_at: '2026-11-12T10:30:00Z'
+                created_at: '2026-11-12T10:30:00Z'
+                version: 1
+                items:
+                - id: 1
+                  variant_id: 1
+                  product_name: Example
+                  variant_name: Example
+                  sku: SKU-001
+                  barcode: '1234567890123'
+                  unit_code: ea
+                  unit_name: Each
+                  quantity: 12.5
+                  unit_price: 12.5
+                  discount_amount: 12.5
+                  tax_rate: 12.5
+                  tax_amount: 12.5
+                  line_subtotal: 12.5
+                  line_total: 12.5
+                payments:
+                - id: 1
+                  payment_method: card
+                  currency_code: USD
+                  amount: 12.5
+                  tendered_amount: 12.5
+                  change_given: 12.5
+                  reference: REF-1001
+                  notes: Example note
+                  received_by: 00000000-0000-0000-0000-000000000001
+                  created_at: '2026-11-12T10:30:00Z'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: sales.update
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSaleRequest'
+            example:
+              expected_version: 1
+              location_id: 1
+              customer_id: 1
+              notes: Example note
+              items:
+              - variant_id: 1
+                quantity: 12.5
+                unit_price: 12.5
+                discount_amount: 12.5
+                tax_rate: 12.5
+  /api/v1/sales/{id}/receipt:
+    get:
+      summary: Retrieve the sale receipt
+      description: Company-scoped operation.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sale'
+              example:
+                id: 1
+                sale_number: 1
+                location_id: 1
+                customer_id: 1
+                status: draft
+                currency_code: USD
+                subtotal: 12.5
+                discount_total: 12.5
+                tax_total: 12.5
+                total_amount: 12.5
+                notes: Example note
+                created_by: 00000000-0000-0000-0000-000000000001
+                completed_by: 00000000-0000-0000-0000-000000000001
+                completed_at: '2026-11-12T10:30:00Z'
+                created_at: '2026-11-12T10:30:00Z'
+                version: 1
+                items:
+                - id: 1
+                  variant_id: 1
+                  product_name: Example
+                  variant_name: Example
+                  sku: SKU-001
+                  barcode: '1234567890123'
+                  unit_code: ea
+                  unit_name: Each
+                  quantity: 12.5
+                  unit_price: 12.5
+                  discount_amount: 12.5
+                  tax_rate: 12.5
+                  tax_amount: 12.5
+                  line_subtotal: 12.5
+                  line_total: 12.5
+                payments:
+                - id: 1
+                  payment_method: card
+                  currency_code: USD
+                  amount: 12.5
+                  tendered_amount: 12.5
+                  change_given: 12.5
+                  reference: REF-1001
+                  notes: Example note
+                  received_by: 00000000-0000-0000-0000-000000000001
+                  created_at: '2026-11-12T10:30:00Z'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: sales.view
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+  /api/v1/sales/{id}/refunds:
+    get:
+      summary: List refunds for a sale
+      description: Company-scoped operation.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SaleRefund'
+              example:
+              - id: 1
+                sale_id: 1
+                return_id: 1
+                void_id: 1
+                cash_session_id: 1
+                payment_method: card
+                amount: 12.5
+                reference: REF-1001
+                notes: Example note
+                refunded_by: 00000000-0000-0000-0000-000000000001
+                created_at: '2026-11-12T10:30:00Z'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: sales.view
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+  /api/v1/sales/{id}/returns:
+    get:
+      summary: List returns for a sale
+      description: Company-scoped. Lists returns belonging to this company-scoped sale.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SaleReturn'
+              example:
+              - id: 1
+                sale_id: 1
+                location_id: 1
+                reason: Customer returned item
+                notes: Example note
+                created_by: 00000000-0000-0000-0000-000000000001
+                created_at: '2026-11-12T10:30:00Z'
+                items:
+                - id: 1
+                  sale_item_id: 1
+                  variant_id: 1
+                  product_name: Example
+                  variant_name: Example
+                  quantity: 12.5
+                  item_condition: resellable
+                  refundable_amount: 12.5
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: sales.view
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+    post:
+      summary: Record a return against a sale
+      description: Company-scoped. A new return responds 201; an idempotent replay responds 200.
+      responses:
+        '201':
+          description: Resource created.
+          content: &id002
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SaleReturn'
+              example:
+                id: 1
+                sale_id: 1
+                location_id: 1
+                reason: Customer returned item
+                notes: Example note
+                created_by: 00000000-0000-0000-0000-000000000001
+                created_at: '2026-11-12T10:30:00Z'
+                items:
+                - id: 1
+                  sale_item_id: 1
+                  variant_id: 1
+                  product_name: Example
+                  variant_name: Example
+                  quantity: 12.5
+                  item_condition: resellable
+                  refundable_amount: 12.5
+        '200':
+          description: Idempotent replay returns the previously posted resource.
+          content: *id002
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+        '422':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: sales.return
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSaleReturnRequest'
+            example:
+              reason: Customer returned item
+              notes: Example note
+              idempotency_key: 00000000-0000-0000-0000-000000000001
+              items:
+              - sale_item_id: 1
+                quantity: 12.5
+                item_condition: resellable
+  /api/v1/sales/{id}/void:
+    get:
+      summary: Get the sale void record, or null when none exists
+      description: Company-scoped. Returns the void record, or JSON null when the sale has not been voided.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/SaleVoid'
+                - type: 'null'
+              example:
+                id: 1
+                sale_id: 1
+                reason: Customer returned item
+                notes: Example note
+                created_by: 00000000-0000-0000-0000-000000000001
+                created_at: '2026-11-12T10:30:00Z'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: sales.view
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+    post:
+      summary: Void a sale and record any refunds
+      description: Company-scoped. A new void responds 201; an idempotent replay responds 200.
+      responses:
+        '201':
+          description: Resource created.
+          content: &id003
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SaleVoid'
+              example:
+                id: 1
+                sale_id: 1
+                reason: Customer returned item
+                notes: Example note
+                created_by: 00000000-0000-0000-0000-000000000001
+                created_at: '2026-11-12T10:30:00Z'
+        '200':
+          description: Idempotent replay returns the previously posted resource.
+          content: *id003
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+        '422':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: sales.void
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VoidSaleRequest'
+            example:
+              idempotency_key: 00000000-0000-0000-0000-000000000001
+              reason: Customer returned item
+              notes: Example note
+              register_id: 1
+              refunds:
+              - payment_method: cash
+                amount: 12.5
+                reference: REF-1001
+                notes: Example note
+  /api/v1/suppliers:
+    get:
+      summary: List company suppliers
+      description: Company-scoped. Returns every company supplier; this endpoint has no query filters or pagination.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Supplier'
+              example:
+              - id: 1
+                supplier_number: 1
+                name: Example product
+                contact_person: Example
+                email: Example
+                phone: '+263771234567'
+                address: 1 Example Road
+                tax_number: TAX-001
+                notes: Example note
+                payment_terms_days: 1
+                is_active: true
+                created_at: '2026-11-12T10:30:00Z'
+                updated_at: '2026-11-12T10:30:00Z'
+                version: 1
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: suppliers.view
+    post:
+      summary: Create a supplier
+      description: Company-scoped. Creates a supplier in the authenticated company.
+      responses:
+        '201':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Supplier'
+              example:
+                id: 1
+                supplier_number: 1
+                name: Example product
+                contact_person: Example
+                email: Example
+                phone: '+263771234567'
+                address: 1 Example Road
+                tax_number: TAX-001
+                notes: Example note
+                payment_terms_days: 1
+                is_active: true
+                created_at: '2026-11-12T10:30:00Z'
+                updated_at: '2026-11-12T10:30:00Z'
+                version: 1
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: suppliers.manage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SupplierCreate'
+            example:
+              name: Example product
+              contact_person: Example
+              email: Example
+              phone: '+263771234567'
+              address: 1 Example Road
+              tax_number: TAX-001
+              notes: Example note
+              payment_terms_days: 1
+  /health:
+    get:
+      summary: Check API and database availability
+      description: Public health endpoint. Executes a lightweight database query. Returns 200 when the API can reach
+        the database and an empty 503 response otherwise.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: ok
+                database: connected
+        '503':
+          description: Database health query failed; response body is empty.
+  /api/v1/customers/{id}/credit-policy:
+    patch:
+      summary: Update a customer's credit policy
+      description: Company-scoped operation.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Customer'
+              example:
+                id: 1
+                customer_number: 1
+                currency_code: USD
+                name: Example product
+                email: Example
+                phone: '+263771234567'
+                address: 1 Example Road
+                tax_number: TAX-001
+                notes: Example note
+                credit_enabled: true
+                credit_limit: 12.5
+                payment_terms_days: 1
+                is_active: true
+                created_at: '2026-11-12T10:30:00Z'
+                updated_at: '2026-11-12T10:30:00Z'
+                version: 1
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: customers.credit
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerCreditPolicyUpdate'
+            example:
+              expected_version: 1
+              credit_enabled: true
+              credit_limit: 12.5
+              payment_terms_days: 1
+  /api/v1/cash-registers/{register_id}/sessions:
+    post:
+      summary: Open a cash session
+      description: Company-scoped operation.
+      responses:
+        '201':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CashRegisterSession'
+              example:
+                id: 1
+                register_id: 1
+                location_id: 1
+                status: draft
+                opening_float: 12.5
+                opening_notes: Example
+                opened_by: 00000000-0000-0000-0000-000000000001
+                opened_at: '2026-11-12T10:30:00Z'
+                closed_by: 00000000-0000-0000-0000-000000000001
+                closed_at: '2026-11-12T10:30:00Z'
+                expected_cash: 12.5
+                closing_cash_count: 12.5
+                cash_variance: 12.5
+                closing_notes: Example
+                version: 1
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: cash_register.open
+      parameters:
+      - in: path
+        name: register_id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpenCashSessionRequest'
+            example:
+              opening_float: 12.5
+              opening_notes: Example
+  /api/v1/cash-sessions/{session_id}/close:
+    post:
+      summary: Close a cash session with a counted balance
+      description: Company-scoped operation.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CashRegisterSession'
+              example:
+                id: 1
+                register_id: 1
+                location_id: 1
+                status: draft
+                opening_float: 12.5
+                opening_notes: Example
+                opened_by: 00000000-0000-0000-0000-000000000001
+                opened_at: '2026-11-12T10:30:00Z'
+                closed_by: 00000000-0000-0000-0000-000000000001
+                closed_at: '2026-11-12T10:30:00Z'
+                expected_cash: 12.5
+                closing_cash_count: 12.5
+                cash_variance: 12.5
+                closing_notes: Example
+                version: 1
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: cash_register.close
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CloseCashSessionRequest'
+            example:
+              closing_cash_count: 12.5
+              closing_notes: Example
+  /api/v1/inventory/adjustments:
+    post:
+      summary: Post an idempotent stock adjustment
+      description: Company-scoped operation.
+      responses:
+        '201':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockAdjustmentResponse'
+              example:
+                movement_id: 1
+                variant_id: 1
+                location_id: 1
+                movement_type: adjustment_in
+                quantity_delta: 12.5
+                quantity_on_hand: 12.5
+                reserved_quantity: 12.5
+                available_quantity: 12.5
+                version: 1
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: inventory.adjust
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StockAdjustmentRequest'
+            example:
+              location_id: 1
+              variant_id: 1
+              movement_type: adjustment_in
+              quantity_delta: 12.5
+              notes: Example note
+              idempotency_key: 00000000-0000-0000-0000-000000000001
+  /api/v1/purchases/{id}/cancel:
+    post:
+      summary: Cancel an editable purchase order
+      description: Company-scoped operation.
+      responses:
+        '204':
+          description: Successful response with no body.
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: purchases.cancel
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+  /api/v1/purchases/{id}/submit:
+    post:
+      summary: Submit a purchase order
+      description: Company-scoped operation.
+      responses:
+        '204':
+          description: Successful response with no body.
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: purchases.update
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+  /api/v1/sales/returns/{return_id}/refunds:
+    post:
+      summary: Refund a recorded sale return
+      description: Company-scoped. A new refund responds 201; an idempotent replay responds 200.
+      responses:
+        '201':
+          description: Resource created.
+          content: &id004
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SaleRefund'
+              example:
+                id: 1
+                sale_id: 1
+                return_id: 1
+                void_id: 1
+                cash_session_id: 1
+                payment_method: card
+                amount: 12.5
+                reference: REF-1001
+                notes: Example note
+                refunded_by: 00000000-0000-0000-0000-000000000001
+                created_at: '2026-11-12T10:30:00Z'
+        '200':
+          description: Idempotent replay returns the previously posted resource.
+          content: *id004
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+        '422':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: sales.refund
+      parameters:
+      - in: path
+        name: return_id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRefundRequest'
+            example:
+              idempotency_key: 00000000-0000-0000-0000-000000000001
+              payment_method: cash
+              amount: 12.5
+              register_id: 1
+              reference: REF-1001
+              notes: Example note
+  /api/v1/sales/{id}/cancel:
+    post:
+      summary: Cancel a draft sale
+      description: Company-scoped operation.
+      responses:
+        '204':
+          description: Successful response with no body.
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: sales.cancel
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+  /api/v1/sales/{id}/checkout:
+    post:
+      summary: Check out a sale using an idempotency key
+      description: Company-scoped. The handler returns 200 for both initial completion and idempotent replay.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sale'
+              example:
+                id: 1
+                sale_number: 1
+                location_id: 1
+                customer_id: 1
+                status: draft
+                currency_code: USD
+                subtotal: 12.5
+                discount_total: 12.5
+                tax_total: 12.5
+                total_amount: 12.5
+                notes: Example note
+                created_by: 00000000-0000-0000-0000-000000000001
+                completed_by: 00000000-0000-0000-0000-000000000001
+                completed_at: '2026-11-12T10:30:00Z'
+                created_at: '2026-11-12T10:30:00Z'
+                version: 1
+                items:
+                - id: 1
+                  variant_id: 1
+                  product_name: Example
+                  variant_name: Example
+                  sku: SKU-001
+                  barcode: '1234567890123'
+                  unit_code: ea
+                  unit_name: Each
+                  quantity: 12.5
+                  unit_price: 12.5
+                  discount_amount: 12.5
+                  tax_rate: 12.5
+                  tax_amount: 12.5
+                  line_subtotal: 12.5
+                  line_total: 12.5
+                payments:
+                - id: 1
+                  payment_method: card
+                  currency_code: USD
+                  amount: 12.5
+                  tendered_amount: 12.5
+                  change_given: 12.5
+                  reference: REF-1001
+                  notes: Example note
+                  received_by: 00000000-0000-0000-0000-000000000001
+                  created_at: '2026-11-12T10:30:00Z'
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: sales.checkout
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequest'
+            example:
+              expected_version: 1
+              idempotency_key: 00000000-0000-0000-0000-000000000001
+              register_id: 1
+              payments:
+              - payment_method: cash
+                amount: 12.5
+                tendered_amount: 12.5
+                reference: REF-1001
+                notes: Example note
+  /api/v1/customers/{id}:
+    put:
+      summary: Update a customer profile
+      description: Company-scoped operation.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Customer'
+              example:
+                id: 1
+                customer_number: 1
+                currency_code: USD
+                name: Example product
+                email: Example
+                phone: '+263771234567'
+                address: 1 Example Road
+                tax_number: TAX-001
+                notes: Example note
+                credit_enabled: true
+                credit_limit: 12.5
+                payment_terms_days: 1
+                is_active: true
+                created_at: '2026-11-12T10:30:00Z'
+                updated_at: '2026-11-12T10:30:00Z'
+                version: 1
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: customers.profile.manage
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerUpdate'
+            example:
+              expected_version: 1
+              name: Example product
+              email: Example
+              phone: '+263771234567'
+              address: 1 Example Road
+              tax_number: TAX-001
+              notes: Example note
+              is_active: true
+  /api/v1/suppliers/{id}:
+    put:
+      summary: Update a supplier
+      description: Company-scoped operation.
+      responses:
+        '200':
+          description: Successful response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Supplier'
+              example:
+                id: 1
+                supplier_number: 1
+                name: Example product
+                contact_person: Example
+                email: Example
+                phone: '+263771234567'
+                address: 1 Example Road
+                tax_number: TAX-001
+                notes: Example note
+                payment_terms_days: 1
+                is_active: true
+                created_at: '2026-11-12T10:30:00Z'
+                updated_at: '2026-11-12T10:30:00Z'
+                version: 1
+        '401':
+          $ref: '#/components/responses/SecurityError'
+        '403':
+          $ref: '#/components/responses/SecurityError'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '500':
+          $ref: '#/components/responses/ApiError'
+      security:
+      - bearerAuth: []
+      x-required-permission: suppliers.manage
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+        example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SupplierUpdate'
+            example:
+              expected_version: 1
+              name: Example product
+              contact_person: Example
+              email: Example
+              phone: '+263771234567'
+              address: 1 Example Road
+              tax_number: TAX-001
+              notes: Example note
+              payment_terms_days: 1
+              is_active: true
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    UuidPath:
+      in: path
+      name: id
+      required: true
+      schema:
+        type: string
+        format: uuid
+    PartyIdPath:
+      in: path
+      name: id
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    PageLimit:
+      in: query
+      name: limit
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+    PageOffset:
+      in: query
+      name: offset
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    FromDate:
+      in: query
+      name: from
+      description: Inclusive UTC date
+      schema:
+        type: string
+        format: date
+    ToDate:
+      in: query
+      name: to
+      description: Inclusive UTC date
+      schema:
+        type: string
+        format: date
+    SalesInterval:
+      in: query
+      name: interval
+      schema:
+        type: string
+        enum:
+        - day
+        - week
+        - month
+        default: day
+    LocationId:
+      in: query
+      name: location_id
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    VariantId:
+      in: query
+      name: variant_id
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    SaleStatus:
+      in: query
+      name: status
+      schema:
+        type: string
+        enum:
+        - draft
+        - completed
+        - cancelled
+    PaymentMethod:
+      in: query
+      name: payment_method
+      schema:
+        type: string
+        enum:
+        - cash
+        - card
+        - mobile_money
+        - other
+    StockStatus:
+      in: query
+      name: status
+      schema:
+        type: string
+        enum:
+        - all
+        - low
+        - out
+        default: all
+    LowStockThreshold:
+      in: query
+      name: threshold
+      description: Explicit nonnegative on-hand threshold; required with status=low
+      schema:
+        type: string
+        pattern: ^[0-9]+(\\.[0-9]{1,4})?$
+  responses:
+    SecurityError:
+      description: Authentication or authorization rejected by middleware (currently an empty response body)
+    AuthError:
+      description: Authentication service error
+      content:
+        text/plain:
+          schema:
+            type: string
+    ApiError:
+      description: Standard API error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+  schemas:
+    ApiError:
+      type: object
+      required:
+      - error
+      properties:
+        error:
+          type: object
+          required:
+          - code
+          - message
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+    RegisterRequest:
+      type: object
+      required:
+      - company
+      - owner
+      properties:
+        company:
+          type: object
+          required:
+          - name
+          properties:
+            name:
+              type: string
+            business_type:
+              type:
+              - string
+              - 'null'
+            country_code:
+              type:
+              - string
+              - 'null'
+              minLength: 2
+              maxLength: 2
+            timezone:
+              type:
+              - string
+              - 'null'
+            locale:
+              type:
+              - string
+              - 'null'
+            default_currency:
+              type:
+              - string
+              - 'null'
+              minLength: 3
+              maxLength: 3
+        owner:
+          type: object
+          required:
+          - name
+          - username
+          - password
+          properties:
+            name:
+              type: string
+            username:
+              type: string
+            email:
+              type:
+              - string
+              - 'null'
+              format: email
+            password:
+              type: string
+              writeOnly: true
+              minLength: 15
+              maxLength: 128
+    RegisterResponse:
+      type: object
+      properties:
+        company_id:
+          type: string
+          format: uuid
+        company_name:
+          type: string
+        user_id:
+          type: string
+          format: uuid
+        owner_name:
+          type: string
+        username:
+          type: string
+        message:
+          type: string
+    LoginRequest:
+      type: object
+      required:
+      - company_id
+      - username
+      - password
+      properties:
+        company_id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        password:
+          type: string
+          writeOnly: true
+    LoginResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+          writeOnly: true
+        token_type:
+          type: string
+        expires_in:
+          type: integer
+        user:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            company_id:
+              type: string
+              format: uuid
+            name:
+              type: string
+            username:
+              type: string
+    Shop:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        business_type:
+          type:
+          - string
+          - 'null'
+        description:
+          type:
+          - string
+          - 'null'
+        email:
+          type:
+          - string
+          - 'null'
+        phone:
+          type:
+          - string
+          - 'null'
+        address:
+          type:
+          - string
+          - 'null'
+        city:
+          type:
+          - string
+          - 'null'
+        country_code:
+          type: string
+        timezone:
+          type: string
+        locale:
+          type: string
+        default_currency:
+          type: string
+        status:
+          type: string
+        version:
+          type: integer
+        updated_at:
+          type: string
+          format: date-time
+    ShopUpdate:
+      type: object
+      required:
+      - expected_version
+      - name
+      - country_code
+      - timezone
+      - locale
+      - default_currency
+      properties:
+        expected_version:
+          type: integer
+        name:
+          type: string
+        business_type:
+          type:
+          - string
+          - 'null'
+        description:
+          type:
+          - string
+          - 'null'
+        email:
+          type:
+          - string
+          - 'null'
+          format: email
+        phone:
+          type:
+          - string
+          - 'null'
+        address:
+          type:
+          - string
+          - 'null'
+        city:
+          type:
+          - string
+          - 'null'
+        country_code:
+          type: string
+          minLength: 2
+          maxLength: 2
+        timezone:
+          type: string
+        locale:
+          type: string
+        default_currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+    RoleSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        role_key:
+          type:
+          - string
+          - 'null'
+        is_system_role:
+          type: boolean
+    ManagedUser:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        company_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type:
+          - string
+          - 'null'
+        username:
+          type: string
+        status:
+          type: string
+          enum:
+          - active
+          - inactive
+          - suspended
+        last_login_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        version:
+          type: integer
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleSummary'
+    UserPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ManagedUser'
+        limit:
+          type: integer
+        offset:
+          type: integer
+    UserCreate:
+      type: object
+      required:
+      - name
+      - username
+      - initial_password
+      - role_ids
+      properties:
+        name:
+          type: string
+        username:
+          type: string
+        email:
+          type:
+          - string
+          - 'null'
+          format: email
+        initial_password:
+          type: string
+          writeOnly: true
+          minLength: 15
+          maxLength: 128
+        role_ids:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+    UserUpdate:
+      type: object
+      required:
+      - expected_version
+      - name
+      - status
+      properties:
+        expected_version:
+          type: integer
+        name:
+          type: string
+        email:
+          type:
+          - string
+          - 'null'
+          format: email
+        status:
+          type: string
+          enum:
+          - active
+          - inactive
+          - suspended
+    UserRoleUpdate:
+      type: object
+      required:
+      - role_ids
+      properties:
+        role_ids:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+    Permission:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        permission_key:
+          type: string
+        resource:
+          type: string
+        action:
+          type: string
+        description:
+          type:
+          - string
+          - 'null'
+    Role:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type:
+          - string
+          - 'null'
+        role_key:
+          type:
+          - string
+          - 'null'
+        is_system_role:
+          type: boolean
+        is_active:
+          type: boolean
+        version:
+          type: integer
+        permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Permission'
+    RolePermissionUpdate:
+      type: object
+      required:
+      - expected_version
+      - permission_ids
+      properties:
+        expected_version:
+          type: integer
+        permission_ids:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+    ReportObject:
+      type: object
+      additionalProperties: true
+    ReportArray:
+      type: array
+      items:
+        $ref: '#/components/schemas/ReportObject'
+    ReportPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReportObject'
+        limit:
+          type: integer
+        offset:
+          type: integer
+    DecimalAmount:
+      oneOf:
+      - type: number
+      - type: string
+        pattern: ^-?[0-9]+(\\.[0-9]{1,4})?$
+    Allocation:
+      type: object
+      required:
+      - document_id
+      - amount
+      properties:
+        document_id:
+          type: integer
+          format: int64
+          minimum: 1
+        amount:
+          $ref: '#/components/schemas/DecimalAmount'
+    PaymentCreate:
+      type: object
+      required:
+      - idempotency_key
+      - amount
+      - payment_method
+      properties:
+        idempotency_key:
+          type: string
+          format: uuid
+        amount:
+          $ref: '#/components/schemas/DecimalAmount'
+        payment_method:
+          type: string
+          enum:
+          - cash
+          - card
+          - mobile_money
+          - other
+        cash_session_id:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        reference:
+          type:
+          - string
+          - 'null'
+          maxLength: 150
+        notes:
+          type:
+          - string
+          - 'null'
+        allocations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Allocation'
+    CreditNoteCreate:
+      type: object
+      required:
+      - idempotency_key
+      - amount
+      - reason
+      properties:
+        idempotency_key:
+          type: string
+          format: uuid
+        document_id:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        amount:
+          $ref: '#/components/schemas/DecimalAmount'
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1000
+    SupplierInvoiceLineCreate:
+      type: object
+      required:
+      - description
+      - quantity
+      - unit_cost
+      - tax_amount
+      - discount_amount
+      properties:
+        description:
+          type: string
+          minLength: 1
+          maxLength: 255
+        quantity:
+          $ref: '#/components/schemas/DecimalAmount'
+        unit_cost:
+          $ref: '#/components/schemas/DecimalAmount'
+        tax_amount:
+          $ref: '#/components/schemas/DecimalAmount'
+        discount_amount:
+          $ref: '#/components/schemas/DecimalAmount'
+        purchase_order_item_id:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        goods_receipt_item_id:
+          type:
+          - integer
+          - 'null'
+          format: int64
+    SupplierInvoiceCreate:
+      type: object
+      required:
+      - idempotency_key
+      - invoice_number
+      - invoice_date
+      - currency_code
+      - additional_charges
+      - lines
+      properties:
+        idempotency_key:
+          type: string
+          format: uuid
+        invoice_number:
+          type: string
+          maxLength: 100
+        supplier_reference:
+          type:
+          - string
+          - 'null'
+          maxLength: 150
+        purchase_order_id:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        invoice_date:
+          type: string
+          format: date
+        due_date:
+          type:
+          - string
+          - 'null'
+          format: date
+        currency_code:
+          type: string
+          minLength: 3
+          maxLength: 3
+        additional_charges:
+          $ref: '#/components/schemas/DecimalAmount'
+        notes:
+          type:
+          - string
+          - 'null'
+        lines:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/SupplierInvoiceLineCreate'
+    SupplierInvoiceLine:
+      allOf:
+      - $ref: '#/components/schemas/SupplierInvoiceLineCreate'
+      - type: object
+        properties:
+          id:
+            type: integer
+            format: int64
+          line_total:
+            $ref: '#/components/schemas/DecimalAmount'
+    SupplierInvoice:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        supplier_id:
+          type: integer
+          format: int64
+        invoice_number:
+          type: string
+        supplier_reference:
+          type:
+          - string
+          - 'null'
+        purchase_order_id:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        invoice_date:
+          type: string
+          format: date
+        due_date:
+          type:
+          - string
+          - 'null'
+          format: date
+        currency_code:
+          type: string
+        subtotal:
+          $ref: '#/components/schemas/DecimalAmount'
+        tax_total:
+          $ref: '#/components/schemas/DecimalAmount'
+        discount_total:
+          $ref: '#/components/schemas/DecimalAmount'
+        additional_charges:
+          $ref: '#/components/schemas/DecimalAmount'
+        total_amount:
+          $ref: '#/components/schemas/DecimalAmount'
+        status:
+          type: string
+          enum:
+          - posted
+        posted_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/SupplierInvoiceLine'
+    InvoicePage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SupplierInvoice'
+        limit:
+          type: integer
+        offset:
+          type: integer
+    PostingResult:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        document_number:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        replayed:
+          type: boolean
+    AccountBalance:
+      type: object
+      properties:
+        party_id:
+          type: integer
+          format: int64
+        currency_code:
+          type: string
+        balance:
+          $ref: '#/components/schemas/DecimalAmount'
+    StatementLine:
+      type: object
+      properties:
+        event_type:
+          type: string
+        document_id:
+          type: integer
+          format: int64
+        event_at:
+          type: string
+          format: date-time
+        reference:
+          type:
+          - string
+          - 'null'
+        balance_delta:
+          $ref: '#/components/schemas/DecimalAmount'
+        balance_after:
+          $ref: '#/components/schemas/DecimalAmount'
+    StatementPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/StatementLine'
+        limit:
+          type: integer
+        offset:
+          type: integer
+    OutstandingDocument:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        document_number:
+          type: string
+        document_date:
+          type: string
+          format: date
+        total_amount:
+          $ref: '#/components/schemas/DecimalAmount'
+        allocated_amount:
+          $ref: '#/components/schemas/DecimalAmount'
+        credited_amount:
+          $ref: '#/components/schemas/DecimalAmount'
+        outstanding_amount:
+          $ref: '#/components/schemas/DecimalAmount'
+    OutstandingPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OutstandingDocument'
+        limit:
+          type: integer
+        offset:
+          type: integer
+    CreateCashRegisterRequest:
+      type: object
+      properties:
+        location_id:
+          type: integer
+          format: int64
+        code:
+          type: string
+        name:
+          type: string
+      required:
+      - location_id
+      - code
+      - name
+    OpenCashSessionRequest:
+      type: object
+      properties:
+        opening_float:
+          type: number
+          format: decimal
+        opening_notes:
+          type:
+          - string
+          - 'null'
+      required:
+      - opening_float
+    CashMovementRequest:
+      type: object
+      properties:
+        movement_type:
+          type: string
+          enum:
+          - cash_in
+          - cash_out
+          - paid_out
+          - cash_drop
+        amount:
+          type: number
+          format: decimal
+        reference:
+          type:
+          - string
+          - 'null'
+        notes:
+          type:
+          - string
+          - 'null'
+        idempotency_key:
+          type: string
+          format: uuid
+      required:
+      - movement_type
+      - amount
+      - idempotency_key
+    CloseCashSessionRequest:
+      type: object
+      properties:
+        closing_cash_count:
+          type: number
+          format: decimal
+        closing_notes:
+          type:
+          - string
+          - 'null'
+      required:
+      - closing_cash_count
+    CashRegister:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        location_id:
+          type: integer
+          format: int64
+        code:
+          type: string
+        name:
+          type: string
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - location_id
+      - code
+      - name
+      - is_active
+      - created_at
+      - updated_at
+    CashRegisterSession:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        register_id:
+          type: integer
+          format: int64
+        location_id:
+          type: integer
+          format: int64
+        status:
+          type: string
+        opening_float:
+          type: number
+          format: decimal
+        opening_notes:
+          type:
+          - string
+          - 'null'
+        opened_by:
+          type: string
+          format: uuid
+        opened_at:
+          type: string
+          format: date-time
+        closed_by:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        closed_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        expected_cash:
+          type:
+          - number
+          - 'null'
+          format: decimal
+        closing_cash_count:
+          type:
+          - number
+          - 'null'
+          format: decimal
+        cash_variance:
+          type:
+          - number
+          - 'null'
+          format: decimal
+        closing_notes:
+          type:
+          - string
+          - 'null'
+        version:
+          type: integer
+          format: int32
+      required:
+      - id
+      - register_id
+      - location_id
+      - status
+      - opening_float
+      - opened_by
+      - opened_at
+      - version
+    CashMovement:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        register_session_id:
+          type: integer
+          format: int64
+        movement_type:
+          type: string
+        amount:
+          type: number
+          format: decimal
+        reference:
+          type:
+          - string
+          - 'null'
+        notes:
+          type:
+          - string
+          - 'null'
+        created_by:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - register_session_id
+      - movement_type
+      - amount
+      - created_by
+      - created_at
+    CashSessionSummary:
+      type: object
+      properties:
+        session:
+          $ref: '#/components/schemas/CashRegisterSession'
+        total_cash_sales:
+          type: number
+          format: decimal
+        total_cash_refunds:
+          type: number
+          format: decimal
+        total_customer_receipts:
+          type: number
+          format: decimal
+        total_supplier_payments:
+          type: number
+          format: decimal
+        total_customer_payment_reversals:
+          type: number
+          format: decimal
+        total_supplier_payment_reversals:
+          type: number
+          format: decimal
+        total_cash_in:
+          type: number
+          format: decimal
+        total_cash_out:
+          type: number
+          format: decimal
+        total_paid_out:
+          type: number
+          format: decimal
+        total_cash_drops:
+          type: number
+          format: decimal
+        calculated_expected_cash:
+          type: number
+          format: decimal
+      required:
+      - session
+      - total_cash_sales
+      - total_cash_refunds
+      - total_customer_receipts
+      - total_supplier_payments
+      - total_customer_payment_reversals
+      - total_supplier_payment_reversals
+      - total_cash_in
+      - total_cash_out
+      - total_paid_out
+      - total_cash_drops
+      - calculated_expected_cash
+    StockItem:
+      type: object
+      properties:
+        location_id:
+          type: integer
+          format: int64
+        location_name:
+          type: string
+        variant_id:
+          type: integer
+          format: int64
+        product_id:
+          type: integer
+          format: int64
+        product_name:
+          type: string
+        variant_name:
+          type: string
+        sku:
+          type:
+          - string
+          - 'null'
+        barcode:
+          type:
+          - string
+          - 'null'
+        unit_code:
+          type: string
+        unit_name:
+          type: string
+        quantity_on_hand:
+          type: number
+          format: decimal
+        reserved_quantity:
+          type: number
+          format: decimal
+        available_quantity:
+          type: number
+          format: decimal
+        version:
+          type: integer
+          format: int32
+      required:
+      - location_id
+      - location_name
+      - variant_id
+      - product_id
+      - product_name
+      - variant_name
+      - unit_code
+      - unit_name
+      - quantity_on_hand
+      - reserved_quantity
+      - available_quantity
+      - version
+    StockMovement:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        location_id:
+          type: integer
+          format: int64
+        variant_id:
+          type: integer
+          format: int64
+        movement_type:
+          type: string
+        quantity_delta:
+          type: number
+          format: decimal
+        reference_type:
+          type:
+          - string
+          - 'null'
+        reference_id:
+          type:
+          - string
+          - 'null'
+        notes:
+          type:
+          - string
+          - 'null'
+        created_by:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - location_id
+      - variant_id
+      - movement_type
+      - quantity_delta
+      - created_at
+    StockQuery:
+      type: object
+      properties:
+        location_id:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        variant_id:
+          type:
+          - integer
+          - 'null'
+          format: int64
+    MovementQuery:
+      type: object
+      properties:
+        location_id:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        variant_id:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        limit:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        offset:
+          type:
+          - integer
+          - 'null'
+          format: int64
+    StockAdjustmentRequest:
+      type: object
+      properties:
+        location_id:
+          type: integer
+          format: int64
+        variant_id:
+          type: integer
+          format: int64
+        movement_type:
+          type: string
+          enum:
+          - adjustment_in
+          - adjustment_out
+          - count_adjustment
+        quantity_delta:
+          type: number
+          format: decimal
+        notes:
+          type:
+          - string
+          - 'null'
+        idempotency_key:
+          type: string
+          format: uuid
+      required:
+      - location_id
+      - variant_id
+      - movement_type
+      - quantity_delta
+      - idempotency_key
+    StockAdjustmentResponse:
+      type: object
+      properties:
+        movement_id:
+          type: integer
+          format: int64
+        variant_id:
+          type: integer
+          format: int64
+        location_id:
+          type: integer
+          format: int64
+        movement_type:
+          type: string
+        quantity_delta:
+          type: number
+          format: decimal
+        quantity_on_hand:
+          type: number
+          format: decimal
+        reserved_quantity:
+          type: number
+          format: decimal
+        available_quantity:
+          type: number
+          format: decimal
+        version:
+          type: integer
+          format: int32
+      required:
+      - movement_id
+      - variant_id
+      - location_id
+      - movement_type
+      - quantity_delta
+      - quantity_on_hand
+      - reserved_quantity
+      - available_quantity
+      - version
+    Product:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        description:
+          type:
+          - string
+          - 'null'
+        category_id:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        track_inventory:
+          type: boolean
+        is_active:
+          type: boolean
+        version:
+          type: integer
+          format: int32
+        variants:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductVariant'
+      required:
+      - id
+      - name
+      - track_inventory
+      - is_active
+      - version
+      - variants
+    ProductVariant:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        sku:
+          type:
+          - string
+          - 'null'
+        barcode:
+          type:
+          - string
+          - 'null'
+        unit_id:
+          type: integer
+          format: int64
+        unit_code:
+          type: string
+        unit_name:
+          type: string
+        unit_symbol:
+          type: string
+        selling_price:
+          type: number
+          format: decimal
+        cost_price:
+          type:
+          - number
+          - 'null'
+          format: decimal
+        is_default:
+          type: boolean
+        is_active:
+          type: boolean
+        version:
+          type: integer
+          format: int32
+      required:
+      - id
+      - name
+      - unit_id
+      - unit_code
+      - unit_name
+      - unit_symbol
+      - selling_price
+      - is_default
+      - is_active
+      - version
+    CreateProductRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type:
+          - string
+          - 'null'
+        category_id:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        track_inventory:
+          type: boolean
+        variant:
+          $ref: '#/components/schemas/ProductVariantRequest'
+      required:
+      - name
+      - variant
+    UpdateProductRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type:
+          - string
+          - 'null'
+        category_id:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        track_inventory:
+          type: boolean
+        variant:
+          $ref: '#/components/schemas/ProductVariantRequest'
+      required:
+      - name
+      - variant
+    ProductVariantRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        sku:
+          type:
+          - string
+          - 'null'
+        barcode:
+          type:
+          - string
+          - 'null'
+        unit_id:
+          type: integer
+          format: int64
+        selling_price:
+          type: number
+          format: decimal
+        cost_price:
+          type:
+          - number
+          - 'null'
+          format: decimal
+      required:
+      - name
+      - unit_id
+      - selling_price
+    UpdateProductVariantRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        sku:
+          type:
+          - string
+          - 'null'
+        barcode:
+          type:
+          - string
+          - 'null'
+        unit_id:
+          type: integer
+          format: int64
+        selling_price:
+          type: number
+          format: decimal
+        cost_price:
+          type:
+          - number
+          - 'null'
+          format: decimal
+        expected_version:
+          type: integer
+          format: int32
+      required:
+      - name
+      - unit_id
+      - selling_price
+      - expected_version
+    ApiErrorResponse:
+      type: object
+      properties:
+        error:
+          $ref: '#/components/schemas/ApiErrorDetail'
+      required:
+      - error
+    ApiErrorDetail:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+      required:
+      - code
+      - message
+    PurchaseOrderItemRequest:
+      type: object
+      properties:
+        variant_id:
+          type: integer
+          format: int64
+        ordered_quantity:
+          type: number
+          format: decimal
+        unit_cost:
+          type: number
+          format: decimal
+      required:
+      - variant_id
+      - ordered_quantity
+      - unit_cost
+    CreatePurchaseOrderRequest:
+      type: object
+      properties:
+        supplier_id:
+          type: integer
+          format: int64
+        order_date:
+          type:
+          - string
+          - 'null'
+          format: date
+        expected_delivery_date:
+          type:
+          - string
+          - 'null'
+          format: date
+        tax_total:
+          type:
+          - number
+          - 'null'
+          format: decimal
+        discount_total:
+          type:
+          - number
+          - 'null'
+          format: decimal
+        notes:
+          type:
+          - string
+          - 'null'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurchaseOrderItemRequest'
+      required:
+      - supplier_id
+      - items
+    UpdatePurchaseOrderRequest:
+      type: object
+      properties:
+        expected_version:
+          type: integer
+          format: int32
+        supplier_id:
+          type: integer
+          format: int64
+        order_date:
+          type:
+          - string
+          - 'null'
+          format: date
+        expected_delivery_date:
+          type:
+          - string
+          - 'null'
+          format: date
+        tax_total:
+          type:
+          - number
+          - 'null'
+          format: decimal
+        discount_total:
+          type:
+          - number
+          - 'null'
+          format: decimal
+        notes:
+          type:
+          - string
+          - 'null'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurchaseOrderItemRequest'
+      required:
+      - expected_version
+      - supplier_id
+      - items
+    PurchaseOrderQuery:
+      type: object
+      properties:
+        supplier_id:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        status:
+          type:
+          - string
+          - 'null'
+        limit:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        offset:
+          type:
+          - integer
+          - 'null'
+          format: int64
+    PurchaseOrder:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        order_number:
+          type: integer
+          format: int64
+        supplier_id:
+          type: integer
+          format: int64
+        supplier_name:
+          type: string
+        status:
+          type: string
+        order_date:
+          type: string
+          format: date
+        expected_delivery_date:
+          type:
+          - string
+          - 'null'
+          format: date
+        subtotal:
+          type: number
+          format: decimal
+        tax_total:
+          type: number
+          format: decimal
+        discount_total:
+          type: number
+          format: decimal
+        total_amount:
+          type: number
+          format: decimal
+        notes:
+          type:
+          - string
+          - 'null'
+        created_at:
+          type: string
+          format: date-time
+        version:
+          type: integer
+          format: int32
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurchaseOrderItem'
+      required:
+      - id
+      - order_number
+      - supplier_id
+      - supplier_name
+      - status
+      - order_date
+      - subtotal
+      - tax_total
+      - discount_total
+      - total_amount
+      - created_at
+      - version
+      - items
+    PurchaseOrderItem:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        variant_id:
+          type: integer
+          format: int64
+        product_name:
+          type: string
+        variant_name:
+          type: string
+        sku:
+          type:
+          - string
+          - 'null'
+        unit_code:
+          type: string
+        unit_name:
+          type: string
+        ordered_quantity:
+          type: number
+          format: decimal
+        received_quantity:
+          type: number
+          format: decimal
+        outstanding_quantity:
+          type: number
+          format: decimal
+        unit_cost:
+          type: number
+          format: decimal
+        line_total:
+          type: number
+          format: decimal
+      required:
+      - id
+      - variant_id
+      - product_name
+      - variant_name
+      - unit_code
+      - unit_name
+      - ordered_quantity
+      - received_quantity
+      - outstanding_quantity
+      - unit_cost
+      - line_total
+    ReceiveGoodsRequest:
+      type: object
+      properties:
+        location_id:
+          type: integer
+          format: int64
+        idempotency_key:
+          type: string
+          format: uuid
+        notes:
+          type:
+          - string
+          - 'null'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReceiveGoodsItemRequest'
+      required:
+      - location_id
+      - idempotency_key
+      - items
+    ReceiveGoodsItemRequest:
+      type: object
+      properties:
+        purchase_order_item_id:
+          type: integer
+          format: int64
+        quantity_received:
+          type: number
+          format: decimal
+        unit_cost:
+          type:
+          - number
+          - 'null'
+          format: decimal
+      required:
+      - purchase_order_item_id
+      - quantity_received
+    GoodsReceipt:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        receipt_number:
+          type: integer
+          format: int64
+        purchase_order_id:
+          type: integer
+          format: int64
+        location_id:
+          type: integer
+          format: int64
+        received_by:
+          type: string
+          format: uuid
+        notes:
+          type:
+          - string
+          - 'null'
+        received_at:
+          type: string
+          format: date-time
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/GoodsReceiptItem'
+      required:
+      - id
+      - receipt_number
+      - purchase_order_id
+      - location_id
+      - received_by
+      - received_at
+      - items
+    GoodsReceiptItem:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        purchase_order_item_id:
+          type: integer
+          format: int64
+        quantity_received:
+          type: number
+          format: decimal
+        unit_cost:
+          type: number
+          format: decimal
+      required:
+      - id
+      - purchase_order_item_id
+      - quantity_received
+      - unit_cost
+    SaleItemRequest:
+      type: object
+      properties:
+        variant_id:
+          type: integer
+          format: int64
+        quantity:
+          type: number
+          format: decimal
+        unit_price:
+          type: number
+          format: decimal
+        discount_amount:
+          type:
+          - number
+          - 'null'
+          format: decimal
+        tax_rate:
+          type:
+          - number
+          - 'null'
+          format: decimal
+      required:
+      - variant_id
+      - quantity
+      - unit_price
+    CreateSaleRequest:
+      type: object
+      properties:
+        location_id:
+          type: integer
+          format: int64
+        customer_id:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        notes:
+          type:
+          - string
+          - 'null'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SaleItemRequest'
+      required:
+      - location_id
+      - items
+    UpdateSaleRequest:
+      type: object
+      properties:
+        expected_version:
+          type: integer
+          format: int32
+        location_id:
+          type: integer
+          format: int64
+        customer_id:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        notes:
+          type:
+          - string
+          - 'null'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SaleItemRequest'
+      required:
+      - expected_version
+      - location_id
+      - items
+    SaleQuery:
+      type: object
+      properties:
+        status:
+          type:
+          - string
+          - 'null'
+        location_id:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        limit:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        offset:
+          type:
+          - integer
+          - 'null'
+          format: int64
+    CheckoutRequest:
+      type: object
+      properties:
+        expected_version:
+          type: integer
+          format: int32
+        idempotency_key:
+          type: string
+          format: uuid
+        register_id:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        payments:
+          type: array
+          items:
+            $ref: '#/components/schemas/SalePaymentRequest'
+      required:
+      - expected_version
+      - idempotency_key
+      - payments
+    SalePaymentRequest:
+      type: object
+      properties:
+        payment_method:
+          type: string
+          enum:
+          - cash
+          - card
+          - mobile_money
+          - other
+        amount:
+          type: number
+          format: decimal
+        tendered_amount:
+          type: number
+          format: decimal
+        reference:
+          type:
+          - string
+          - 'null'
+        notes:
+          type:
+          - string
+          - 'null'
+      required:
+      - payment_method
+      - amount
+      - tendered_amount
+    Sale:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        sale_number:
+          type: integer
+          format: int64
+        location_id:
+          type: integer
+          format: int64
+        customer_id:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        status:
+          type: string
+        currency_code:
+          type: string
+        subtotal:
+          type: number
+          format: decimal
+        discount_total:
+          type: number
+          format: decimal
+        tax_total:
+          type: number
+          format: decimal
+        total_amount:
+          type: number
+          format: decimal
+        notes:
+          type:
+          - string
+          - 'null'
+        created_by:
+          type: string
+          format: uuid
+        completed_by:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        completed_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        version:
+          type: integer
+          format: int32
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SaleItem'
+        payments:
+          type: array
+          items:
+            $ref: '#/components/schemas/SalePayment'
+      required:
+      - id
+      - sale_number
+      - location_id
+      - status
+      - currency_code
+      - subtotal
+      - discount_total
+      - tax_total
+      - total_amount
+      - created_by
+      - created_at
+      - version
+      - items
+      - payments
+    SaleItem:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        variant_id:
+          type: integer
+          format: int64
+        product_name:
+          type: string
+        variant_name:
+          type: string
+        sku:
+          type:
+          - string
+          - 'null'
+        barcode:
+          type:
+          - string
+          - 'null'
+        unit_code:
+          type: string
+        unit_name:
+          type: string
+        quantity:
+          type: number
+          format: decimal
+        unit_price:
+          type: number
+          format: decimal
+        discount_amount:
+          type: number
+          format: decimal
+        tax_rate:
+          type: number
+          format: decimal
+        tax_amount:
+          type: number
+          format: decimal
+        line_subtotal:
+          type: number
+          format: decimal
+        line_total:
+          type: number
+          format: decimal
+      required:
+      - id
+      - variant_id
+      - product_name
+      - variant_name
+      - unit_code
+      - unit_name
+      - quantity
+      - unit_price
+      - discount_amount
+      - tax_rate
+      - tax_amount
+      - line_subtotal
+      - line_total
+    SalePayment:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        payment_method:
+          type: string
+        currency_code:
+          type: string
+        amount:
+          type: number
+          format: decimal
+        tendered_amount:
+          type: number
+          format: decimal
+        change_given:
+          type: number
+          format: decimal
+        reference:
+          type:
+          - string
+          - 'null'
+        notes:
+          type:
+          - string
+          - 'null'
+        received_by:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - payment_method
+      - currency_code
+      - amount
+      - tendered_amount
+      - change_given
+      - received_by
+      - created_at
+    CheckoutOutcome:
+      type: object
+      properties:
+        sale:
+          $ref: '#/components/schemas/Sale'
+        replayed:
+          type: boolean
+      required:
+      - sale
+      - replayed
+    ReturnItemRequest:
+      type: object
+      properties:
+        sale_item_id:
+          type: integer
+          format: int64
+        quantity:
+          type: number
+          format: decimal
+        item_condition:
+          type: string
+          enum:
+          - resellable
+          - damaged
+          - unsellable
+      required:
+      - sale_item_id
+      - quantity
+      - item_condition
+    CreateSaleReturnRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+        notes:
+          type:
+          - string
+          - 'null'
+        idempotency_key:
+          type: string
+          format: uuid
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReturnItemRequest'
+      required:
+      - reason
+      - idempotency_key
+      - items
+    CreateRefundRequest:
+      type: object
+      properties:
+        idempotency_key:
+          type: string
+          format: uuid
+        payment_method:
+          type: string
+          enum:
+          - cash
+          - card
+          - mobile_money
+          - other
+        amount:
+          type: number
+          format: decimal
+        register_id:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        reference:
+          type:
+          - string
+          - 'null'
+        notes:
+          type:
+          - string
+          - 'null'
+      required:
+      - idempotency_key
+      - payment_method
+      - amount
+    VoidRefundRequest:
+      type: object
+      properties:
+        payment_method:
+          type: string
+          enum:
+          - cash
+          - card
+          - mobile_money
+          - other
+        amount:
+          type: number
+          format: decimal
+        reference:
+          type:
+          - string
+          - 'null'
+        notes:
+          type:
+          - string
+          - 'null'
+      required:
+      - payment_method
+      - amount
+    VoidSaleRequest:
+      type: object
+      properties:
+        idempotency_key:
+          type: string
+          format: uuid
+        reason:
+          type: string
+        notes:
+          type:
+          - string
+          - 'null'
+        register_id:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        refunds:
+          type: array
+          items:
+            $ref: '#/components/schemas/VoidRefundRequest'
+      required:
+      - idempotency_key
+      - reason
+      - refunds
+    SaleReturn:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        sale_id:
+          type: integer
+          format: int64
+        location_id:
+          type: integer
+          format: int64
+        reason:
+          type: string
+        notes:
+          type:
+          - string
+          - 'null'
+        created_by:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SaleReturnItem'
+      required:
+      - id
+      - sale_id
+      - location_id
+      - reason
+      - created_by
+      - created_at
+      - items
+    SaleReturnItem:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        sale_item_id:
+          type: integer
+          format: int64
+        variant_id:
+          type: integer
+          format: int64
+        product_name:
+          type: string
+        variant_name:
+          type: string
+        quantity:
+          type: number
+          format: decimal
+        item_condition:
+          type: string
+        refundable_amount:
+          type: number
+          format: decimal
+      required:
+      - id
+      - sale_item_id
+      - variant_id
+      - product_name
+      - variant_name
+      - quantity
+      - item_condition
+      - refundable_amount
+    SaleRefund:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        sale_id:
+          type: integer
+          format: int64
+        return_id:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        void_id:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        cash_session_id:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        payment_method:
+          type: string
+        amount:
+          type: number
+          format: decimal
+        reference:
+          type:
+          - string
+          - 'null'
+        notes:
+          type:
+          - string
+          - 'null'
+        refunded_by:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - sale_id
+      - payment_method
+      - amount
+      - refunded_by
+      - created_at
+    SaleVoid:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        sale_id:
+          type: integer
+          format: int64
+        reason:
+          type: string
+        notes:
+          type:
+          - string
+          - 'null'
+        created_by:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - sale_id
+      - reason
+      - created_by
+      - created_at
+    CustomerCreate:
+      type: object
+      properties:
+        name:
+          type: string
+        email:
+          type:
+          - string
+          - 'null'
+        phone:
+          type:
+          - string
+          - 'null'
+        address:
+          type:
+          - string
+          - 'null'
+        tax_number:
+          type:
+          - string
+          - 'null'
+        notes:
+          type:
+          - string
+          - 'null'
+      required:
+      - name
+      additionalProperties: false
+    CustomerUpdate:
+      type: object
+      properties:
+        expected_version:
+          type: integer
+          format: int32
+        name:
+          type: string
+        email:
+          type:
+          - string
+          - 'null'
+        phone:
+          type:
+          - string
+          - 'null'
+        address:
+          type:
+          - string
+          - 'null'
+        tax_number:
+          type:
+          - string
+          - 'null'
+        notes:
+          type:
+          - string
+          - 'null'
+        is_active:
+          type: boolean
+      required:
+      - expected_version
+      - name
+      - is_active
+      additionalProperties: false
+    CustomerCreditPolicyUpdate:
+      type: object
+      properties:
+        expected_version:
+          type: integer
+          format: int32
+        credit_enabled:
+          type: boolean
+        credit_limit:
+          type: number
+          format: decimal
+        payment_terms_days:
+          type: integer
+          format: int32
+      required:
+      - expected_version
+      - credit_enabled
+      - credit_limit
+      - payment_terms_days
+      additionalProperties: false
+    Customer:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        customer_number:
+          type: integer
+          format: int64
+        currency_code:
+          type: string
+        name:
+          type: string
+        email:
+          type:
+          - string
+          - 'null'
+        phone:
+          type:
+          - string
+          - 'null'
+        address:
+          type:
+          - string
+          - 'null'
+        tax_number:
+          type:
+          - string
+          - 'null'
+        notes:
+          type:
+          - string
+          - 'null'
+        credit_enabled:
+          type: boolean
+        credit_limit:
+          type: number
+          format: decimal
+        payment_terms_days:
+          type: integer
+          format: int32
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        version:
+          type: integer
+          format: int32
+      required:
+      - id
+      - customer_number
+      - currency_code
+      - name
+      - credit_enabled
+      - credit_limit
+      - payment_terms_days
+      - is_active
+      - created_at
+      - updated_at
+      - version
+    SupplierCreate:
+      type: object
+      properties:
+        name:
+          type: string
+        contact_person:
+          type:
+          - string
+          - 'null'
+        email:
+          type:
+          - string
+          - 'null'
+        phone:
+          type:
+          - string
+          - 'null'
+        address:
+          type:
+          - string
+          - 'null'
+        tax_number:
+          type:
+          - string
+          - 'null'
+        notes:
+          type:
+          - string
+          - 'null'
+        payment_terms_days:
+          type: integer
+          format: int32
+      required:
+      - name
+    SupplierUpdate:
+      type: object
+      properties:
+        expected_version:
+          type: integer
+          format: int32
+        name:
+          type: string
+        contact_person:
+          type:
+          - string
+          - 'null'
+        email:
+          type:
+          - string
+          - 'null'
+        phone:
+          type:
+          - string
+          - 'null'
+        address:
+          type:
+          - string
+          - 'null'
+        tax_number:
+          type:
+          - string
+          - 'null'
+        notes:
+          type:
+          - string
+          - 'null'
+        payment_terms_days:
+          type: integer
+          format: int32
+        is_active:
+          type: boolean
+      required:
+      - expected_version
+      - name
+      - payment_terms_days
+      - is_active
+    Supplier:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        supplier_number:
+          type: integer
+          format: int64
+        name:
+          type: string
+        contact_person:
+          type:
+          - string
+          - 'null'
+        email:
+          type:
+          - string
+          - 'null'
+        phone:
+          type:
+          - string
+          - 'null'
+        address:
+          type:
+          - string
+          - 'null'
+        tax_number:
+          type:
+          - string
+          - 'null'
+        notes:
+          type:
+          - string
+          - 'null'
+        payment_terms_days:
+          type: integer
+          format: int32
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        version:
+          type: integer
+          format: int32
+      required:
+      - id
+      - supplier_number
+      - name
+      - payment_terms_days
+      - is_active
+      - created_at
+      - updated_at
+      - version
+    HealthResponse:
+      type: object
+      required:
+      - status
+      - database
+      properties:
+        status:
+          type: string
+        database:
+          type: string

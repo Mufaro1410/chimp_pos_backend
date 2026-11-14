@@ -1,0 +1,4975 @@
+]633;E;echo "===== MAIN =====";06dc859e-8f95-4972-8047-f9d319d57517]633;C===== MAIN =====
+mod errors;
+mod handlers;
+mod models;
+mod routes;
+mod services;
+mod state;
+mod utils;
+
+use std::sync::Arc;
+
+use axum::serve;
+use sqlx::postgres::PgPoolOptions;
+use tokio::net::TcpListener;
+
+use state::AppState;
+
+#[tokio::main]
+async fn main() {
+    dotenvy::dotenv().ok();
+
+    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+
+    let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
+
+    if jwt_secret.len() < 32 {
+        panic!("JWT_SECRET must contain at least 32 characters");
+    }
+
+    let db = PgPoolOptions::new()
+        .max_connections(10)
+        .connect(&database_url)
+        .await
+        .expect("Failed to connect to PostgreSQL");
+
+    let state = Arc::new(AppState { db, jwt_secret });
+
+    let app = routes::create_routes(state);
+
+    let listener = TcpListener::bind("127.0.0.1:3000")
+        .await
+        .expect("Failed to bind TCP listener");
+
+    println!("Server running at http://127.0.0.1:3000");
+
+    serve(listener, app).await.expect("Server failed");
+}
+use sqlx::PgPool;
+use std::sync::Arc;
+
+pub struct AppState {
+    pub db: PgPool,
+    pub jwt_secret: String,
+}
+
+pub type SharedState = Arc<AppState>;
+use axum::{
+    Router, middleware,
+    routing::{get, post, put},
+};
+
+use crate::{
+    handlers::{
+        auth::{login_handler, me_handler, register},
+        health,
+        inventory::{adjust_stock, get_movements, get_stock},
+        product::{create_product, delete_product, get_product, get_products, update_product},
+        purchasing::{
+            cancel_purchase_order, create_purchase_order, get_purchase_order, get_receipts,
+            list_purchase_orders, receive_goods, submit_purchase_order, update_purchase_order,
+        },
+        sales::{
+            cancel_sale, checkout_sale, create_sale, get_receipt, get_sale, list_sales, update_sale,
+        },
+        sales_returns::{
+            create_return, get_void, list_refunds, list_returns, refund_return, void_sale,
+        },
+        variant::{
+            create_product_variant, deactivate_product_variant, get_product_variants,
+            update_product_variant,
+        },
+    },
+    state::SharedState,
+    utils::{auth_middleware::auth_middleware, permission_middleware::permission_middleware},
+};
+
+pub fn create_routes(state: SharedState) -> Router {
+    // Product routes require authentication AND authorization.
+    let product_routes = Router::new()
+        .route("/api/v1/products", get(get_products).post(create_product))
+        .route(
+            "/api/v1/products/{id}",
+            get(get_product).put(update_product).delete(delete_product),
+        )
+        .route(
+            "/api/v1/products/{product_id}/variants",
+            get(get_product_variants).post(create_product_variant),
+        )
+        .route(
+            "/api/v1/products/{product_id}/variants/{variant_id}",
+            put(update_product_variant).delete(deactivate_product_variant),
+        )
+        .route("/api/v1/inventory/stock", get(get_stock))
+        .route("/api/v1/inventory/movements", get(get_movements))
+        .route("/api/v1/inventory/adjustments", post(adjust_stock))
+        // Check permissions after authentication.
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            permission_middleware,
+        ))
+        // Authentication must execute before permission checking.
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
+
+    let purchasing_routes = Router::new()
+        .route(
+            "/api/v1/purchases",
+            get(list_purchase_orders).post(create_purchase_order),
+        )
+        .route(
+            "/api/v1/purchases/{id}",
+            get(get_purchase_order).put(update_purchase_order),
+        )
+        .route("/api/v1/purchases/{id}/submit", post(submit_purchase_order))
+        .route("/api/v1/purchases/{id}/cancel", post(cancel_purchase_order))
+        .route(
+            "/api/v1/purchases/{id}/receipts",
+            get(get_receipts).post(receive_goods),
+        )
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            permission_middleware,
+        ))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
+
+    let sales_routes = Router::new()
+        .route("/api/v1/sales", get(list_sales).post(create_sale))
+        .route("/api/v1/sales/{id}", get(get_sale).put(update_sale))
+        .route("/api/v1/sales/{id}/checkout", post(checkout_sale))
+        .route("/api/v1/sales/{id}/receipt", get(get_receipt))
+        .route("/api/v1/sales/{id}/cancel", post(cancel_sale))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            permission_middleware,
+        ))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
+
+    let sales_returns_routes = Router::new()
+        .route(
+            "/api/v1/sales/{id}/returns",
+            get(list_returns).post(create_return),
+        )
+        .route(
+            "/api/v1/sales/returns/{return_id}/refunds",
+            post(refund_return),
+        )
+        .route("/api/v1/sales/{id}/refunds", get(list_refunds))
+        .route("/api/v1/sales/{id}/void", get(get_void).post(void_sale))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            permission_middleware,
+        ))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
+
+    // The identity endpoint requires authentication,
+    // but does not require a specific business permission.
+    let identity_routes = Router::new()
+        .route("/api/v1/auth/me", get(me_handler))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
+
+    Router::new()
+        .merge(product_routes)
+        .merge(identity_routes)
+        .merge(purchasing_routes)
+        .merge(sales_routes)
+        .merge(sales_returns_routes)
+        // Public routes.
+        .route("/health", get(health::health_check))
+        .route("/api/v1/auth/register", post(register))
+        .route("/api/v1/auth/login", post(login_handler))
+        .with_state(state)
+}
+===== MODELS =====
+use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+// ------------------------------------------------------------
+// REQUESTS
+// ------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct SaleItemRequest {
+    pub variant_id: i64,
+    pub quantity: Decimal,
+    pub unit_price: Decimal,
+    pub discount_amount: Option<Decimal>,
+    pub tax_rate: Option<Decimal>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateSaleRequest {
+    pub location_id: i64,
+    pub notes: Option<String>,
+    pub items: Vec<SaleItemRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateSaleRequest {
+    pub expected_version: i32,
+    pub location_id: i64,
+    pub notes: Option<String>,
+    pub items: Vec<SaleItemRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SaleQuery {
+    pub status: Option<String>,
+    pub location_id: Option<i64>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CheckoutRequest {
+    pub expected_version: i32,
+    pub idempotency_key: Uuid,
+    pub payments: Vec<SalePaymentRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SalePaymentRequest {
+    pub payment_method: String,
+    pub amount: Decimal,
+    pub tendered_amount: Decimal,
+    pub reference: Option<String>,
+    pub notes: Option<String>,
+}
+
+// ------------------------------------------------------------
+// RESPONSES
+// ------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct Sale {
+    pub id: i64,
+    pub sale_number: i64,
+    pub location_id: i64,
+    pub status: String,
+
+    pub subtotal: Decimal,
+    pub discount_total: Decimal,
+    pub tax_total: Decimal,
+    pub total_amount: Decimal,
+
+    pub notes: Option<String>,
+
+    pub created_by: Uuid,
+    pub completed_by: Option<Uuid>,
+    pub completed_at: Option<DateTime<Utc>>,
+
+    pub created_at: DateTime<Utc>,
+    pub version: i32,
+
+    pub items: Vec<SaleItem>,
+    pub payments: Vec<SalePayment>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SaleItem {
+    pub id: i64,
+    pub variant_id: i64,
+
+    pub product_name: String,
+    pub variant_name: String,
+
+    pub sku: Option<String>,
+    pub barcode: Option<String>,
+
+    pub unit_code: String,
+    pub unit_name: String,
+
+    pub quantity: Decimal,
+    pub unit_price: Decimal,
+
+    pub discount_amount: Decimal,
+    pub tax_rate: Decimal,
+    pub tax_amount: Decimal,
+
+    pub line_subtotal: Decimal,
+    pub line_total: Decimal,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SalePayment {
+    pub id: i64,
+    pub payment_method: String,
+
+    pub amount: Decimal,
+    pub tendered_amount: Decimal,
+    pub change_given: Decimal,
+
+    pub reference: Option<String>,
+    pub notes: Option<String>,
+
+    pub received_by: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CheckoutOutcome {
+    pub sale: Sale,
+    pub replayed: bool,
+}
+use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ReturnItemRequest {
+    pub sale_item_id: i64,
+    pub quantity: Decimal,
+    pub item_condition: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CreateSaleReturnRequest {
+    pub reason: String,
+    pub notes: Option<String>,
+    pub idempotency_key: Uuid,
+    pub items: Vec<ReturnItemRequest>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CreateRefundRequest {
+    pub idempotency_key: Uuid,
+    pub payment_method: String,
+    pub amount: Decimal,
+    pub reference: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct VoidRefundRequest {
+    pub payment_method: String,
+    pub amount: Decimal,
+    pub reference: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct VoidSaleRequest {
+    pub idempotency_key: Uuid,
+    pub reason: String,
+    pub notes: Option<String>,
+    pub refunds: Vec<VoidRefundRequest>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SaleReturn {
+    pub id: i64,
+    pub sale_id: i64,
+    pub location_id: i64,
+    pub reason: String,
+    pub notes: Option<String>,
+    pub created_by: Uuid,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub items: Vec<SaleReturnItem>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SaleReturnItem {
+    pub id: i64,
+    pub sale_item_id: i64,
+    pub variant_id: i64,
+    pub product_name: String,
+    pub variant_name: String,
+    pub quantity: Decimal,
+    pub item_condition: String,
+    pub refundable_amount: Decimal,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SaleRefund {
+    pub id: i64,
+    pub sale_id: i64,
+    pub return_id: Option<i64>,
+    pub void_id: Option<i64>,
+    pub payment_method: String,
+    pub amount: Decimal,
+    pub reference: Option<String>,
+    pub notes: Option<String>,
+    pub refunded_by: Uuid,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SaleVoid {
+    pub id: i64,
+    pub sale_id: i64,
+    pub reason: String,
+    pub notes: Option<String>,
+    pub created_by: Uuid,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+===== HANDLERS =====
+use axum::{
+    Extension, Json,
+    extract::{Path, Query, State},
+    http::StatusCode,
+};
+
+use crate::{
+    models::{
+        auth::AuthUser,
+        product::{ApiErrorDetail, ApiErrorResponse},
+        sales::*,
+    },
+    services::sales_service::{self, SalesError},
+    state::SharedState,
+};
+
+fn map_error(error: SalesError) -> (StatusCode, Json<ApiErrorResponse>) {
+    let (status, code, message) = match error {
+        SalesError::NotFound => (
+            StatusCode::NOT_FOUND,
+            "SALE_NOT_FOUND",
+            "The sale was not found",
+        ),
+        SalesError::EmptySale => (
+            StatusCode::BAD_REQUEST,
+            "EMPTY_SALE",
+            "A sale must contain at least one item",
+        ),
+        SalesError::InvalidItems | SalesError::InvalidVariant => (
+            StatusCode::BAD_REQUEST,
+            "INVALID_SALE_ITEM",
+            "One or more sale items are invalid",
+        ),
+        SalesError::InvalidQuantity => (
+            StatusCode::BAD_REQUEST,
+            "INVALID_QUANTITY",
+            "The quantity must be greater than zero",
+        ),
+        SalesError::DecimalQuantityNotAllowed => (
+            StatusCode::BAD_REQUEST,
+            "DECIMAL_QUANTITY_NOT_ALLOWED",
+            "This unit does not allow fractional quantities",
+        ),
+        SalesError::InvalidPrice => (
+            StatusCode::BAD_REQUEST,
+            "INVALID_PRICE",
+            "The submitted selling price is invalid",
+        ),
+        SalesError::InvalidDiscount => (
+            StatusCode::BAD_REQUEST,
+            "INVALID_DISCOUNT",
+            "The discount is invalid",
+        ),
+        SalesError::DiscountPermissionRequired => (
+            StatusCode::FORBIDDEN,
+            "DISCOUNT_PERMISSION_REQUIRED",
+            "You do not have permission to apply discounts or override prices",
+        ),
+        SalesError::InvalidTax => (
+            StatusCode::BAD_REQUEST,
+            "INVALID_TAX",
+            "The tax rate is invalid",
+        ),
+        SalesError::InvalidPayment | SalesError::InvalidPaymentMethod => (
+            StatusCode::BAD_REQUEST,
+            "INVALID_PAYMENT",
+            "The payment details are invalid or do not balance with the sale total",
+        ),
+        SalesError::InvalidStatus => (
+            StatusCode::BAD_REQUEST,
+            "INVALID_SALE_STATUS",
+            "The requested sale status is invalid",
+        ),
+        SalesError::InvalidLocation => (
+            StatusCode::NOT_FOUND,
+            "LOCATION_NOT_FOUND",
+            "The inventory location was not found or is inactive",
+        ),
+        SalesError::VersionConflict => (
+            StatusCode::CONFLICT,
+            "VERSION_CONFLICT",
+            "The sale has changed. Refresh and try again",
+        ),
+        SalesError::SaleNotEditable => (
+            StatusCode::CONFLICT,
+            "SALE_NOT_EDITABLE",
+            "This sale cannot be edited or cancelled in its current state",
+        ),
+        SalesError::SaleNotCheckoutable => (
+            StatusCode::CONFLICT,
+            "SALE_NOT_CHECKOUTABLE",
+            "This sale cannot be checked out in its current state",
+        ),
+        SalesError::InsufficientStock => (
+            StatusCode::CONFLICT,
+            "INSUFFICIENT_STOCK",
+            "There is not enough available stock to complete this sale",
+        ),
+        SalesError::IdempotencyConflict => (
+            StatusCode::CONFLICT,
+            "IDEMPOTENCY_KEY_REUSED",
+            "This checkout key has already been used with different details",
+        ),
+        SalesError::Database(error) => {
+            eprintln!("Sales database error: {error}");
+
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "SALES_DATABASE_ERROR",
+                "An internal sales error occurred",
+            )
+        }
+    };
+
+    (
+        status,
+        Json(ApiErrorResponse {
+            error: ApiErrorDetail {
+                code: code.to_string(),
+                message: message.to_string(),
+            },
+        }),
+    )
+}
+
+pub async fn list_sales(
+    State(state): State<SharedState>,
+    Extension(auth): Extension<AuthUser>,
+    Query(query): Query<SaleQuery>,
+) -> Result<Json<Vec<Sale>>, (StatusCode, Json<ApiErrorResponse>)> {
+    sales_service::list_sales(&state.db, auth.company_id, query)
+        .await
+        .map(Json)
+        .map_err(map_error)
+}
+
+pub async fn get_sale(
+    State(state): State<SharedState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(id): Path<i64>,
+) -> Result<Json<Sale>, (StatusCode, Json<ApiErrorResponse>)> {
+    sales_service::get_sale(&state.db, auth.company_id, id)
+        .await
+        .map(Json)
+        .map_err(map_error)
+}
+
+pub async fn create_sale(
+    State(state): State<SharedState>,
+    Extension(auth): Extension<AuthUser>,
+    Json(request): Json<CreateSaleRequest>,
+) -> Result<(StatusCode, Json<Sale>), (StatusCode, Json<ApiErrorResponse>)> {
+    sales_service::create_sale(&state.db, auth.company_id, auth.user_id, request)
+        .await
+        .map(|sale| (StatusCode::CREATED, Json(sale)))
+        .map_err(map_error)
+}
+
+pub async fn update_sale(
+    State(state): State<SharedState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(id): Path<i64>,
+    Json(request): Json<UpdateSaleRequest>,
+) -> Result<Json<Sale>, (StatusCode, Json<ApiErrorResponse>)> {
+    sales_service::update_sale(&state.db, auth.company_id, auth.user_id, id, request)
+        .await
+        .map(Json)
+        .map_err(map_error)
+}
+
+pub async fn checkout_sale(
+    State(state): State<SharedState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(id): Path<i64>,
+    Json(request): Json<CheckoutRequest>,
+) -> Result<(StatusCode, Json<Sale>), (StatusCode, Json<ApiErrorResponse>)> {
+    let outcome =
+        sales_service::checkout_sale(&state.db, auth.company_id, auth.user_id, id, request)
+            .await
+            .map_err(map_error)?;
+
+    let status = if outcome.replayed {
+        StatusCode::OK
+    } else {
+        StatusCode::OK
+    };
+
+    Ok((status, Json(outcome.sale)))
+}
+
+pub async fn get_receipt(
+    State(state): State<SharedState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(id): Path<i64>,
+) -> Result<Json<Sale>, (StatusCode, Json<ApiErrorResponse>)> {
+    sales_service::get_receipt(&state.db, auth.company_id, id)
+        .await
+        .map(Json)
+        .map_err(map_error)
+}
+
+pub async fn cancel_sale(
+    State(state): State<SharedState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, (StatusCode, Json<ApiErrorResponse>)> {
+    sales_service::cancel_sale(&state.db, auth.company_id, auth.user_id, id)
+        .await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(map_error)
+}
+use axum::{
+    Extension, Json,
+    extract::{Path, State},
+    http::StatusCode,
+};
+
+use crate::{
+    models::{
+        auth::AuthUser,
+        product::{ApiErrorDetail, ApiErrorResponse},
+        sales_returns::*,
+    },
+    services::sales_returns_service::{self, SalesReturnsError},
+    state::SharedState,
+};
+
+fn map_error(error: SalesReturnsError) -> (StatusCode, Json<ApiErrorResponse>) {
+    let (status, code, message) = match error {
+        SalesReturnsError::NotFound => (
+            StatusCode::NOT_FOUND,
+            "NOT_FOUND",
+            "The requested record was not found.",
+        ),
+        SalesReturnsError::SaleNotCompleted => (
+            StatusCode::CONFLICT,
+            "SALE_NOT_COMPLETED",
+            "Only completed sales can be returned or voided.",
+        ),
+        SalesReturnsError::SaleAlreadyVoided => (
+            StatusCode::CONFLICT,
+            "SALE_ALREADY_VOIDED",
+            "This sale has already been voided.",
+        ),
+        SalesReturnsError::SaleHasReturns => (
+            StatusCode::CONFLICT,
+            "SALE_HAS_RETURNS",
+            "A sale with existing returns or refunds cannot be voided.",
+        ),
+        SalesReturnsError::ReturnQuantityExceeded => (
+            StatusCode::CONFLICT,
+            "RETURN_QUANTITY_EXCEEDED",
+            "The requested return exceeds the quantity originally sold.",
+        ),
+        SalesReturnsError::RefundExceedsEligibleAmount => (
+            StatusCode::CONFLICT,
+            "REFUND_EXCEEDS_ELIGIBLE_AMOUNT",
+            "The refund exceeds the remaining refundable amount.",
+        ),
+        SalesReturnsError::IdempotencyConflict => (
+            StatusCode::CONFLICT,
+            "IDEMPOTENCY_CONFLICT",
+            "This idempotency key was already used with a different request.",
+        ),
+        SalesReturnsError::PermissionDenied => (
+            StatusCode::FORBIDDEN,
+            "PERMISSION_DENIED",
+            "You do not have permission to perform this operation.",
+        ),
+        SalesReturnsError::InvalidReason => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "INVALID_REASON",
+            "A valid reason is required.",
+        ),
+        SalesReturnsError::InvalidQuantity => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "INVALID_QUANTITY",
+            "The quantity must be positive and valid.",
+        ),
+        SalesReturnsError::InvalidCondition => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "INVALID_CONDITION",
+            "Condition must be resellable, damaged or unsellable.",
+        ),
+        SalesReturnsError::InvalidPayment => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "INVALID_PAYMENT",
+            "The payment amount is invalid.",
+        ),
+        SalesReturnsError::InvalidPaymentMethod => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "INVALID_PAYMENT_METHOD",
+            "The payment method is invalid.",
+        ),
+        SalesReturnsError::DecimalQuantityNotAllowed => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "DECIMAL_QUANTITY_NOT_ALLOWED",
+            "This unit does not allow fractional quantities.",
+        ),
+        SalesReturnsError::InvalidRequest => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "INVALID_REQUEST",
+            "The request is invalid.",
+        ),
+        SalesReturnsError::Database(error) => {
+            tracing::error!("Sales returns database error: {:?}", error);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                "An unexpected error occurred.",
+            )
+        }
+    };
+
+    (
+        status,
+        Json(ApiErrorResponse {
+            error: ApiErrorDetail {
+                code: code.to_string(),
+                message: message.to_string(),
+            },
+        }),
+    )
+}
+
+pub async fn create_return(
+    State(state): State<SharedState>,
+    Extension(user): Extension<AuthUser>,
+    Path(sale_id): Path<i64>,
+    Json(request): Json<CreateSaleReturnRequest>,
+) -> Result<(StatusCode, Json<SaleReturn>), (StatusCode, Json<ApiErrorResponse>)> {
+    let result = sales_returns_service::create_return(
+        &state.db,
+        user.company_id,
+        user.user_id,
+        sale_id,
+        request,
+    )
+    .await
+    .map_err(map_error)?;
+
+    let status = if result.replayed {
+    StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+
+    Ok((status, Json(result.value)))
+}
+
+pub async fn list_returns(
+    State(state): State<SharedState>,
+    Extension(user): Extension<AuthUser>,
+    Path(sale_id): Path<i64>,
+) -> Result<Json<Vec<SaleReturn>>, (StatusCode, Json<ApiErrorResponse>)> {
+    let result = sales_returns_service::list_returns(&state.db, user.company_id, sale_id)
+        .await
+        .map_err(map_error)?;
+
+    Ok(Json(result))
+}
+
+pub async fn refund_return(
+    State(state): State<SharedState>,
+    Extension(user): Extension<AuthUser>,
+    Path(return_id): Path<i64>,
+    Json(request): Json<CreateRefundRequest>,
+) -> Result<(StatusCode, Json<SaleRefund>), (StatusCode, Json<ApiErrorResponse>)> {
+    let result = sales_returns_service::refund_return(
+        &state.db,
+        user.company_id,
+        user.user_id,
+        return_id,
+        request,
+    )
+    .await
+    .map_err(map_error)?;
+
+    let status = if result.replayed {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+
+    Ok((status, Json(result.value)))
+}
+
+pub async fn list_refunds(
+    State(state): State<SharedState>,
+    Extension(user): Extension<AuthUser>,
+    Path(sale_id): Path<i64>,
+) -> Result<Json<Vec<SaleRefund>>, (StatusCode, Json<ApiErrorResponse>)> {
+    let result = sales_returns_service::list_refunds(&state.db, user.company_id, sale_id)
+        .await
+        .map_err(map_error)?;
+
+    Ok(Json(result))
+}
+
+pub async fn void_sale(
+    State(state): State<SharedState>,
+    Extension(user): Extension<AuthUser>,
+    Path(sale_id): Path<i64>,
+    Json(request): Json<VoidSaleRequest>,
+) -> Result<(StatusCode, Json<SaleVoid>), (StatusCode, Json<ApiErrorResponse>)> {
+    let result = sales_returns_service::void_sale(
+        &state.db,
+        user.company_id,
+        user.user_id,
+        sale_id,
+        request,
+    )
+    .await
+    .map_err(map_error)?;
+
+    let status = if result.replayed {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+
+    Ok((status, Json(result.value)))
+}
+
+pub async fn get_void(
+    State(state): State<SharedState>,
+    Extension(user): Extension<AuthUser>,
+    Path(sale_id): Path<i64>,
+) -> Result<Json<Option<SaleVoid>>, (StatusCode, Json<ApiErrorResponse>)> {
+    let result = sales_returns_service::get_void(&state.db, user.company_id, sale_id)
+        .await
+        .map_err(map_error)?;
+
+    Ok(Json(result))
+}
+===== SERVICES =====
+use std::collections::HashSet;
+
+use rust_decimal::Decimal;
+use sqlx::{Error, PgPool, Row};
+use uuid::Uuid;
+
+use crate::models::sales::*;
+
+#[derive(Debug)]
+pub enum SalesError {
+    Database(Error),
+    NotFound,
+    InvalidItems,
+    EmptySale,
+    InvalidQuantity,
+    InvalidPrice,
+    InvalidDiscount,
+    InvalidTax,
+    InvalidPayment,
+    InvalidPaymentMethod,
+    InvalidStatus,
+    InvalidLocation,
+    InvalidVariant,
+    DecimalQuantityNotAllowed,
+    VersionConflict,
+    SaleNotEditable,
+    SaleNotCheckoutable,
+    InsufficientStock,
+    DiscountPermissionRequired,
+    IdempotencyConflict,
+}
+
+#[derive(Debug)]
+pub struct CheckoutOutcome {
+    pub sale: Sale,
+    pub replayed: bool,
+}
+
+fn normalize_notes(value: Option<String>) -> Option<String> {
+    value.and_then(|v| {
+        let trimmed = v.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
+fn validate_decimal(value: Decimal) -> bool {
+    value.scale() <= 4 && value.abs() < Decimal::from(1_000_000_000_000_000_i64)
+}
+
+fn validate_items(items: &[SaleItemRequest]) -> Result<(), SalesError> {
+    if items.is_empty() {
+        return Err(SalesError::EmptySale);
+    }
+
+    let mut seen = HashSet::new();
+
+    for item in items {
+        if !seen.insert(item.variant_id) {
+            return Err(SalesError::InvalidItems);
+        }
+
+        if item.quantity <= Decimal::ZERO || !validate_decimal(item.quantity) {
+            return Err(SalesError::InvalidQuantity);
+        }
+
+        if item.unit_price < Decimal::ZERO || !validate_decimal(item.unit_price) {
+            return Err(SalesError::InvalidPrice);
+        }
+
+        let discount = item.discount_amount.unwrap_or(Decimal::ZERO);
+        let tax_rate = item.tax_rate.unwrap_or(Decimal::ZERO);
+
+        if discount < Decimal::ZERO || !validate_decimal(discount) {
+            return Err(SalesError::InvalidDiscount);
+        }
+
+        if tax_rate < Decimal::ZERO || tax_rate > Decimal::from(100) || !validate_decimal(tax_rate)
+        {
+            return Err(SalesError::InvalidTax);
+        }
+    }
+
+    Ok(())
+}
+
+async fn has_permission(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    company_id: Uuid,
+    user_id: Uuid,
+    permission: &str,
+) -> Result<bool, SalesError> {
+    sqlx::query_scalar(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM user_roles ur
+            JOIN roles r
+              ON r.id = ur.role_id
+             AND r.company_id = ur.company_id
+            JOIN role_permissions rp
+              ON rp.role_id = r.id
+            JOIN permissions p
+              ON p.id = rp.permission_id
+            WHERE ur.user_id = $1
+              AND ur.company_id = $2
+              AND r.is_active = TRUE
+              AND (ur.expires_at IS NULL OR ur.expires_at > NOW())
+              AND p.permission_key = $3
+        )
+        "#,
+    )
+    .bind(user_id)
+    .bind(company_id)
+    .bind(permission)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(SalesError::Database)
+}
+
+async fn validate_location(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    company_id: Uuid,
+    location_id: i64,
+) -> Result<(), SalesError> {
+    let valid = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM inventory_locations
+            WHERE id = $1
+              AND company_id = $2
+              AND is_active = TRUE
+        )
+        "#,
+    )
+    .bind(location_id)
+    .bind(company_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(SalesError::Database)?;
+
+    if !valid {
+        return Err(SalesError::InvalidLocation);
+    }
+
+    Ok(())
+}
+
+pub async fn get_receipt(db: &PgPool, company_id: Uuid, sale_id: i64) -> Result<Sale, SalesError> {
+    let sale = load_sale(db, company_id, sale_id).await?;
+
+    if sale.status != "completed" {
+        return Err(SalesError::SaleNotCheckoutable);
+    }
+
+    Ok(sale)
+}
+
+async fn allocate_sale_number(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    company_id: Uuid,
+) -> Result<i64, SalesError> {
+    sqlx::query_scalar(
+        r#"
+        INSERT INTO sale_sequences (company_id, next_number)
+        VALUES ($1, 2)
+        ON CONFLICT (company_id)
+        DO UPDATE SET next_number =
+            sale_sequences.next_number + 1
+        RETURNING next_number - 1
+        "#,
+    )
+    .bind(company_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(SalesError::Database)
+}
+
+async fn insert_sale_items(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    company_id: Uuid,
+    sale_id: i64,
+    user_id: Uuid,
+    items: &[SaleItemRequest],
+) -> Result<(Decimal, Decimal, Decimal, Decimal), SalesError> {
+    validate_items(items)?;
+
+    let mut subtotal = Decimal::ZERO;
+    let mut discount_total = Decimal::ZERO;
+    let mut tax_total = Decimal::ZERO;
+    let mut total = Decimal::ZERO;
+
+    let mut needs_discount_permission = false;
+
+    for item in items {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                pv.id AS variant_id,
+                pv.name AS variant_name,
+                pv.sku,
+                pv.barcode,
+                pv.selling_price,
+                p.name AS product_name,
+                p.track_inventory,
+                u.code AS unit_code,
+                u.name AS unit_name,
+                u.allows_decimal
+            FROM product_variants pv
+            JOIN products p
+              ON p.id = pv.product_id
+             AND p.company_id = pv.company_id
+            JOIN units_of_measure u
+              ON u.id = pv.unit_id
+            WHERE pv.id = $1
+              AND pv.company_id = $2
+              AND pv.is_active = TRUE
+              AND p.is_active = TRUE
+              AND p.archived_at IS NULL
+            "#,
+        )
+        .bind(item.variant_id)
+        .bind(company_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(SalesError::Database)?
+        .ok_or(SalesError::InvalidVariant)?;
+
+        let product_name: String = row.try_get("product_name").map_err(SalesError::Database)?;
+        let variant_name: String = row.try_get("variant_name").map_err(SalesError::Database)?;
+        let sku: Option<String> = row.try_get("sku").map_err(SalesError::Database)?;
+        let barcode: Option<String> = row.try_get("barcode").map_err(SalesError::Database)?;
+        let unit_code: String = row.try_get("unit_code").map_err(SalesError::Database)?;
+        let unit_name: String = row.try_get("unit_name").map_err(SalesError::Database)?;
+        let allows_decimal: bool = row
+            .try_get("allows_decimal")
+            .map_err(SalesError::Database)?;
+        let selling_price: Decimal = row.try_get("selling_price").map_err(SalesError::Database)?;
+
+        if !allows_decimal && item.quantity.fract() != Decimal::ZERO {
+            return Err(SalesError::DecimalQuantityNotAllowed);
+        }
+
+        if item.unit_price > selling_price {
+            return Err(SalesError::InvalidPrice);
+        }
+
+        let discount = item.discount_amount.unwrap_or(Decimal::ZERO);
+        let tax_rate = item.tax_rate.unwrap_or(Decimal::ZERO);
+
+        if item.unit_price < selling_price || discount > Decimal::ZERO {
+            needs_discount_permission = true;
+        }
+
+        let line_subtotal = (item.quantity * item.unit_price).round_dp(4);
+
+        if discount > line_subtotal {
+            return Err(SalesError::InvalidDiscount);
+        }
+
+        let taxable_amount = line_subtotal - discount;
+        let tax_amount = (taxable_amount * tax_rate / Decimal::from(100)).round_dp(4);
+
+        let line_total = taxable_amount + tax_amount;
+
+        sqlx::query(
+            r#"
+            INSERT INTO sale_items (
+                company_id,
+                sale_id,
+                variant_id,
+                product_name,
+                variant_name,
+                sku,
+                barcode,
+                unit_code,
+                unit_name,
+                quantity,
+                unit_price,
+                discount_amount,
+                tax_rate,
+                tax_amount,
+                line_subtotal,
+                line_total
+            )
+            VALUES (
+                $1,$2,$3,$4,$5,$6,$7,$8,$9,
+                $10,$11,$12,$13,$14,$15,$16
+            )
+            "#,
+        )
+        .bind(company_id)
+        .bind(sale_id)
+        .bind(item.variant_id)
+        .bind(product_name)
+        .bind(variant_name)
+        .bind(sku)
+        .bind(barcode)
+        .bind(unit_code)
+        .bind(unit_name)
+        .bind(item.quantity)
+        .bind(item.unit_price)
+        .bind(discount)
+        .bind(tax_rate)
+        .bind(tax_amount)
+        .bind(line_subtotal)
+        .bind(line_total)
+        .execute(&mut **tx)
+        .await
+        .map_err(SalesError::Database)?;
+
+        subtotal += line_subtotal;
+        discount_total += discount;
+        tax_total += tax_amount;
+        total += line_total;
+    }
+
+    if needs_discount_permission
+        && !has_permission(tx, company_id, user_id, "sales.discount").await?
+    {
+        return Err(SalesError::DiscountPermissionRequired);
+    }
+
+    Ok((
+        subtotal.round_dp(4),
+        discount_total.round_dp(4),
+        tax_total.round_dp(4),
+        total.round_dp(4),
+    ))
+}
+
+async fn load_sale(db: &PgPool, company_id: Uuid, sale_id: i64) -> Result<Sale, SalesError> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            sale_number,
+            location_id,
+            status,
+            subtotal,
+            discount_total,
+            tax_total,
+            total_amount,
+            notes,
+            created_by,
+            completed_by,
+            completed_at,
+            created_at,
+            version
+        FROM sales
+        WHERE id = $1
+          AND company_id = $2
+        "#,
+    )
+    .bind(sale_id)
+    .bind(company_id)
+    .fetch_optional(db)
+    .await
+    .map_err(SalesError::Database)?
+    .ok_or(SalesError::NotFound)?;
+
+    let item_rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            variant_id,
+            product_name,
+            variant_name,
+            sku,
+            barcode,
+            unit_code,
+            unit_name,
+            quantity,
+            unit_price,
+            discount_amount,
+            tax_rate,
+            tax_amount,
+            line_subtotal,
+            line_total
+        FROM sale_items
+        WHERE sale_id = $1
+          AND company_id = $2
+        ORDER BY id
+        "#,
+    )
+    .bind(sale_id)
+    .bind(company_id)
+    .fetch_all(db)
+    .await
+    .map_err(SalesError::Database)?;
+
+    let mut items = Vec::new();
+
+    for row in item_rows {
+        items.push(SaleItem {
+            id: row.try_get("id").map_err(SalesError::Database)?,
+            variant_id: row.try_get("variant_id").map_err(SalesError::Database)?,
+            product_name: row.try_get("product_name").map_err(SalesError::Database)?,
+            variant_name: row.try_get("variant_name").map_err(SalesError::Database)?,
+            sku: row.try_get("sku").map_err(SalesError::Database)?,
+            barcode: row.try_get("barcode").map_err(SalesError::Database)?,
+            unit_code: row.try_get("unit_code").map_err(SalesError::Database)?,
+            unit_name: row.try_get("unit_name").map_err(SalesError::Database)?,
+            quantity: row.try_get("quantity").map_err(SalesError::Database)?,
+            unit_price: row.try_get("unit_price").map_err(SalesError::Database)?,
+            discount_amount: row
+                .try_get("discount_amount")
+                .map_err(SalesError::Database)?,
+            tax_rate: row.try_get("tax_rate").map_err(SalesError::Database)?,
+            tax_amount: row.try_get("tax_amount").map_err(SalesError::Database)?,
+            line_subtotal: row.try_get("line_subtotal").map_err(SalesError::Database)?,
+            line_total: row.try_get("line_total").map_err(SalesError::Database)?,
+        });
+    }
+
+    let payment_rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            payment_method,
+            amount,
+            tendered_amount,
+            change_given,
+            reference,
+            notes,
+            received_by,
+            created_at
+        FROM sale_payments
+        WHERE sale_id = $1
+          AND company_id = $2
+        ORDER BY id
+        "#,
+    )
+    .bind(sale_id)
+    .bind(company_id)
+    .fetch_all(db)
+    .await
+    .map_err(SalesError::Database)?;
+
+    let mut payments = Vec::new();
+
+    for row in payment_rows {
+        payments.push(SalePayment {
+            id: row.try_get("id").map_err(SalesError::Database)?,
+            payment_method: row
+                .try_get("payment_method")
+                .map_err(SalesError::Database)?,
+            amount: row.try_get("amount").map_err(SalesError::Database)?,
+            tendered_amount: row
+                .try_get("tendered_amount")
+                .map_err(SalesError::Database)?,
+            change_given: row.try_get("change_given").map_err(SalesError::Database)?,
+            reference: row.try_get("reference").map_err(SalesError::Database)?,
+            notes: row.try_get("notes").map_err(SalesError::Database)?,
+            received_by: row.try_get("received_by").map_err(SalesError::Database)?,
+            created_at: row.try_get("created_at").map_err(SalesError::Database)?,
+        });
+    }
+
+    Ok(Sale {
+        id: row.try_get("id").map_err(SalesError::Database)?,
+        sale_number: row.try_get("sale_number").map_err(SalesError::Database)?,
+        location_id: row.try_get("location_id").map_err(SalesError::Database)?,
+        status: row.try_get("status").map_err(SalesError::Database)?,
+        subtotal: row.try_get("subtotal").map_err(SalesError::Database)?,
+        discount_total: row
+            .try_get("discount_total")
+            .map_err(SalesError::Database)?,
+        tax_total: row.try_get("tax_total").map_err(SalesError::Database)?,
+        total_amount: row.try_get("total_amount").map_err(SalesError::Database)?,
+        notes: row.try_get("notes").map_err(SalesError::Database)?,
+        created_by: row.try_get("created_by").map_err(SalesError::Database)?,
+        completed_by: row.try_get("completed_by").map_err(SalesError::Database)?,
+        completed_at: row.try_get("completed_at").map_err(SalesError::Database)?,
+        created_at: row.try_get("created_at").map_err(SalesError::Database)?,
+        version: row.try_get("version").map_err(SalesError::Database)?,
+        items,
+        payments,
+    })
+}
+
+pub async fn create_sale(
+    db: &PgPool,
+    company_id: Uuid,
+    user_id: Uuid,
+    request: CreateSaleRequest,
+) -> Result<Sale, SalesError> {
+    validate_items(&request.items)?;
+
+    let mut tx = db.begin().await.map_err(SalesError::Database)?;
+
+    validate_location(&mut tx, company_id, request.location_id).await?;
+
+    let sale_number = allocate_sale_number(&mut tx, company_id).await?;
+
+    let sale_id = sqlx::query_scalar::<_, i64>(
+        r#"
+        INSERT INTO sales (
+            company_id,
+            location_id,
+            sale_number,
+            status,
+            created_by,
+            notes
+        )
+        VALUES ($1,$2,$3,'draft',$4,$5)
+        RETURNING id
+        "#,
+    )
+    .bind(company_id)
+    .bind(request.location_id)
+    .bind(sale_number)
+    .bind(user_id)
+    .bind(normalize_notes(request.notes))
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(SalesError::Database)?;
+
+    let (subtotal, discount, tax, total) =
+        insert_sale_items(&mut tx, company_id, sale_id, user_id, &request.items).await?;
+
+    sqlx::query(
+        r#"
+        UPDATE sales
+        SET subtotal = $1,
+            discount_total = $2,
+            tax_total = $3,
+            total_amount = $4,
+            updated_at = NOW()
+        WHERE id = $5
+          AND company_id = $6
+        "#,
+    )
+    .bind(subtotal)
+    .bind(discount)
+    .bind(tax)
+    .bind(total)
+    .bind(sale_id)
+    .bind(company_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(SalesError::Database)?;
+
+    tx.commit().await.map_err(SalesError::Database)?;
+
+    load_sale(db, company_id, sale_id).await
+}
+
+pub async fn update_sale(
+    db: &PgPool,
+    company_id: Uuid,
+    user_id: Uuid,
+    sale_id: i64,
+    request: UpdateSaleRequest,
+) -> Result<Sale, SalesError> {
+    validate_items(&request.items)?;
+
+    let mut tx = db.begin().await.map_err(SalesError::Database)?;
+
+    let row = sqlx::query(
+        r#"
+        SELECT status, version
+        FROM sales
+        WHERE id = $1
+          AND company_id = $2
+        FOR UPDATE
+        "#,
+    )
+    .bind(sale_id)
+    .bind(company_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(SalesError::Database)?
+    .ok_or(SalesError::NotFound)?;
+
+    let status: String = row.try_get("status").map_err(SalesError::Database)?;
+    let version: i32 = row.try_get("version").map_err(SalesError::Database)?;
+
+    if status != "draft" {
+        return Err(SalesError::SaleNotEditable);
+    }
+
+    if version != request.expected_version {
+        return Err(SalesError::VersionConflict);
+    }
+
+    validate_location(&mut tx, company_id, request.location_id).await?;
+
+    sqlx::query("DELETE FROM sale_items WHERE sale_id = $1 AND company_id = $2")
+        .bind(sale_id)
+        .bind(company_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(SalesError::Database)?;
+
+    let (subtotal, discount, tax, total) =
+        insert_sale_items(&mut tx, company_id, sale_id, user_id, &request.items).await?;
+
+    sqlx::query(
+        r#"
+        UPDATE sales
+        SET location_id = $1,
+            subtotal = $2,
+            discount_total = $3,
+            tax_total = $4,
+            total_amount = $5,
+            notes = $6,
+            updated_at = NOW(),
+            version = version + 1
+        WHERE id = $7
+          AND company_id = $8
+        "#,
+    )
+    .bind(request.location_id)
+    .bind(subtotal)
+    .bind(discount)
+    .bind(tax)
+    .bind(total)
+    .bind(normalize_notes(request.notes))
+    .bind(sale_id)
+    .bind(company_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(SalesError::Database)?;
+
+    tx.commit().await.map_err(SalesError::Database)?;
+
+    load_sale(db, company_id, sale_id).await
+}
+
+pub async fn get_sale(db: &PgPool, company_id: Uuid, sale_id: i64) -> Result<Sale, SalesError> {
+    load_sale(db, company_id, sale_id).await
+}
+
+pub async fn list_sales(
+    db: &PgPool,
+    company_id: Uuid,
+    query: SaleQuery,
+) -> Result<Vec<Sale>, SalesError> {
+    if let Some(status) = query.status.as_deref() {
+        if !["draft", "completed", "cancelled"].contains(&status) {
+            return Err(SalesError::InvalidStatus);
+        }
+    }
+
+    let limit = query.limit.unwrap_or(50).clamp(1, 100);
+    let offset = query.offset.unwrap_or(0).max(0);
+
+    let ids = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT id
+        FROM sales
+        WHERE company_id = $1
+          AND ($2::VARCHAR IS NULL OR status = $2)
+          AND ($3::BIGINT IS NULL OR location_id = $3)
+        ORDER BY created_at DESC, id DESC
+        LIMIT $4 OFFSET $5
+        "#,
+    )
+    .bind(company_id)
+    .bind(query.status)
+    .bind(query.location_id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(db)
+    .await
+    .map_err(SalesError::Database)?;
+
+    let mut sales = Vec::new();
+
+    for id in ids {
+        sales.push(load_sale(db, company_id, id).await?);
+    }
+
+    Ok(sales)
+}
+
+pub async fn cancel_sale(
+    db: &PgPool,
+    company_id: Uuid,
+    user_id: Uuid,
+    sale_id: i64,
+) -> Result<(), SalesError> {
+    let result = sqlx::query(
+        r#"
+        UPDATE sales
+        SET status = 'cancelled',
+            cancelled_by = $1,
+            cancelled_at = NOW(),
+            updated_at = NOW(),
+            version = version + 1
+        WHERE id = $2
+          AND company_id = $3
+          AND status = 'draft'
+        "#,
+    )
+    .bind(user_id)
+    .bind(sale_id)
+    .bind(company_id)
+    .execute(db)
+    .await
+    .map_err(SalesError::Database)?;
+
+    if result.rows_affected() == 0 {
+        let exists = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM sales WHERE id=$1 AND company_id=$2)",
+        )
+        .bind(sale_id)
+        .bind(company_id)
+        .fetch_one(db)
+        .await
+        .map_err(SalesError::Database)?;
+
+        return Err(if exists {
+            SalesError::SaleNotEditable
+        } else {
+            SalesError::NotFound
+        });
+    }
+
+    Ok(())
+}
+
+pub async fn checkout_sale(
+    db: &PgPool,
+    company_id: Uuid,
+    user_id: Uuid,
+    sale_id: i64,
+    request: CheckoutRequest,
+) -> Result<CheckoutOutcome, SalesError> {
+    let mut tx = db.begin().await.map_err(SalesError::Database)?;
+
+    // Serialize requests using the same company/idempotency key.
+    let lock_key = format!("{}:{}", company_id, request.idempotency_key);
+
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(lock_key)
+        .execute(&mut *tx)
+        .await
+        .map_err(SalesError::Database)?;
+
+    let row = sqlx::query(
+        r#"
+        SELECT
+            status,
+            version,
+            location_id,
+            total_amount,
+            checkout_idempotency_key
+        FROM sales
+        WHERE id = $1
+          AND company_id = $2
+        FOR UPDATE
+        "#,
+    )
+    .bind(sale_id)
+    .bind(company_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(SalesError::Database)?
+    .ok_or(SalesError::NotFound)?;
+
+    let status: String = row.try_get("status").map_err(SalesError::Database)?;
+    let version: i32 = row.try_get("version").map_err(SalesError::Database)?;
+    let location_id: i64 = row.try_get("location_id").map_err(SalesError::Database)?;
+    let total: Decimal = row.try_get("total_amount").map_err(SalesError::Database)?;
+    let stored_key: Option<Uuid> = row
+        .try_get("checkout_idempotency_key")
+        .map_err(SalesError::Database)?;
+
+    // Check whether this key was already used by another sale.
+    let key_sale: Option<i64> = sqlx::query_scalar(
+        r#"
+        SELECT id
+        FROM sales
+        WHERE company_id = $1
+          AND checkout_idempotency_key = $2
+        "#,
+    )
+    .bind(company_id)
+    .bind(request.idempotency_key)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(SalesError::Database)?;
+
+    if key_sale.is_some_and(|id| id != sale_id) {
+        return Err(SalesError::IdempotencyConflict);
+    }
+
+    // A retry of the same completed checkout returns its original result.
+    if status == "completed" && stored_key == Some(request.idempotency_key) {
+        let existing = sqlx::query(
+            r#"
+            SELECT payment_method, amount, tendered_amount, reference, notes
+            FROM sale_payments
+            WHERE sale_id = $1
+              AND company_id = $2
+            ORDER BY id
+            "#,
+        )
+        .bind(sale_id)
+        .bind(company_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(SalesError::Database)?;
+
+        let mut submitted = request.payments.iter().collect::<Vec<_>>();
+        submitted.sort_by(|a, b| {
+            a.payment_method
+                .cmp(&b.payment_method)
+                .then(a.amount.cmp(&b.amount))
+                .then(a.tendered_amount.cmp(&b.tendered_amount))
+        });
+
+        if existing.len() != submitted.len() {
+            return Err(SalesError::IdempotencyConflict);
+        }
+
+        let mut stored = Vec::new();
+
+        for payment in existing {
+            stored.push((
+                payment
+                    .try_get::<String, _>("payment_method")
+                    .map_err(SalesError::Database)?,
+                payment
+                    .try_get::<Decimal, _>("amount")
+                    .map_err(SalesError::Database)?,
+                payment
+                    .try_get::<Decimal, _>("tendered_amount")
+                    .map_err(SalesError::Database)?,
+                payment
+                    .try_get::<Option<String>, _>("reference")
+                    .map_err(SalesError::Database)?,
+                payment
+                    .try_get::<Option<String>, _>("notes")
+                    .map_err(SalesError::Database)?,
+            ));
+        }
+
+        stored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+
+        for (stored, submitted) in stored.iter().zip(submitted.iter()) {
+            if stored.0 != submitted.payment_method
+                || stored.1 != submitted.amount
+                || stored.2 != submitted.tendered_amount
+                || stored.3 != normalize_notes(submitted.reference.clone())
+                || stored.4 != normalize_notes(submitted.notes.clone())
+            {
+                return Err(SalesError::IdempotencyConflict);
+            }
+        }
+
+        let sale = load_sale(db, company_id, sale_id).await?;
+        tx.commit().await.map_err(SalesError::Database)?;
+
+        return Ok(CheckoutOutcome {
+            sale,
+            replayed: true,
+        });
+    }
+
+    if status != "draft" {
+        return Err(SalesError::SaleNotCheckoutable);
+    }
+
+    if version != request.expected_version {
+        return Err(SalesError::VersionConflict);
+    }
+
+    let item_rows = sqlx::query(
+        r#"
+        SELECT variant_id, quantity
+        FROM sale_items
+        WHERE sale_id = $1
+          AND company_id = $2
+        ORDER BY variant_id
+        "#,
+    )
+    .bind(sale_id)
+    .bind(company_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(SalesError::Database)?;
+
+    if item_rows.is_empty() {
+        return Err(SalesError::EmptySale);
+    }
+
+    let mut payments_total = Decimal::ZERO;
+
+    if total > Decimal::ZERO && request.payments.is_empty() {
+        return Err(SalesError::InvalidPayment);
+    }
+
+    if total == Decimal::ZERO && !request.payments.is_empty() {
+        return Err(SalesError::InvalidPayment);
+    }
+
+    for payment in &request.payments {
+        if !["cash", "card", "mobile_money", "other"].contains(&payment.payment_method.as_str()) {
+            return Err(SalesError::InvalidPaymentMethod);
+        }
+
+        if payment.amount <= Decimal::ZERO
+            || !validate_decimal(payment.amount)
+            || payment.tendered_amount < payment.amount
+            || !validate_decimal(payment.tendered_amount)
+        {
+            return Err(SalesError::InvalidPayment);
+        }
+
+        if payment.payment_method != "cash" && payment.tendered_amount != payment.amount {
+            return Err(SalesError::InvalidPayment);
+        }
+
+        payments_total += payment.amount;
+    }
+
+    if payments_total != total {
+        return Err(SalesError::InvalidPayment);
+    }
+
+    // Lock stock balances in variant ID order to reduce deadlock risk.
+    for item in &item_rows {
+        let variant_id: i64 = item.try_get("variant_id").map_err(SalesError::Database)?;
+        let quantity: Decimal = item.try_get("quantity").map_err(SalesError::Database)?;
+
+        let track_inventory = sqlx::query_scalar::<_, bool>(
+            r#"
+            SELECT p.track_inventory
+            FROM product_variants pv
+            JOIN products p
+              ON p.id = pv.product_id
+             AND p.company_id = pv.company_id
+            WHERE pv.id = $1
+              AND pv.company_id = $2
+              AND pv.is_active = TRUE
+              AND p.is_active = TRUE
+              AND p.archived_at IS NULL
+            "#,
+        )
+        .bind(variant_id)
+        .bind(company_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(SalesError::Database)?
+        .ok_or(SalesError::InvalidVariant)?;
+
+        if !track_inventory {
+            continue;
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO stock_balances (
+                company_id,
+                location_id,
+                variant_id
+            )
+            VALUES ($1,$2,$3)
+            ON CONFLICT (location_id, variant_id) DO NOTHING
+            "#,
+        )
+        .bind(company_id)
+        .bind(location_id)
+        .bind(variant_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(SalesError::Database)?;
+
+        let balance = sqlx::query(
+            r#"
+            SELECT quantity_on_hand, reserved_quantity
+            FROM stock_balances
+            WHERE company_id = $1
+              AND location_id = $2
+              AND variant_id = $3
+            FOR UPDATE
+            "#,
+        )
+        .bind(company_id)
+        .bind(location_id)
+        .bind(variant_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(SalesError::Database)?;
+
+        let on_hand: Decimal = balance
+            .try_get("quantity_on_hand")
+            .map_err(SalesError::Database)?;
+        let reserved: Decimal = balance
+            .try_get("reserved_quantity")
+            .map_err(SalesError::Database)?;
+
+        if on_hand - reserved < quantity {
+            return Err(SalesError::InsufficientStock);
+        }
+
+        let new_quantity = on_hand - quantity;
+
+        sqlx::query(
+            r#"
+            UPDATE stock_balances
+            SET quantity_on_hand = $1,
+                updated_at = NOW(),
+                version = version + 1
+            WHERE company_id = $2
+              AND location_id = $3
+              AND variant_id = $4
+            "#,
+        )
+        .bind(new_quantity)
+        .bind(company_id)
+        .bind(location_id)
+        .bind(variant_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(SalesError::Database)?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO stock_movements (
+                company_id,
+                location_id,
+                variant_id,
+                movement_type,
+                quantity_delta,
+                reference_type,
+                reference_id,
+                idempotency_key,
+                notes,
+                created_by
+            )
+            VALUES (
+                $1,$2,$3,'sale',$4,
+                'sale',$5,$6,$7,$8
+            )
+            "#,
+        )
+        .bind(company_id)
+        .bind(location_id)
+        .bind(variant_id)
+        .bind(-quantity)
+        .bind(sale_id.to_string())
+        .bind(Uuid::new_v4())
+        .bind(Some(format!("Sale {}", sale_id)))
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(SalesError::Database)?;
+    }
+
+    for payment in &request.payments {
+        let change = if payment.payment_method == "cash" {
+            payment.tendered_amount - payment.amount
+        } else {
+            Decimal::ZERO
+        };
+
+        sqlx::query(
+            r#"
+            INSERT INTO sale_payments (
+                company_id,
+                sale_id,
+                payment_method,
+                amount,
+                tendered_amount,
+                change_given,
+                reference,
+                notes,
+                received_by
+            )
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+            "#,
+        )
+        .bind(company_id)
+        .bind(sale_id)
+        .bind(&payment.payment_method)
+        .bind(payment.amount)
+        .bind(payment.tendered_amount)
+        .bind(change)
+        .bind(normalize_notes(payment.reference.clone()))
+        .bind(normalize_notes(payment.notes.clone()))
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(SalesError::Database)?;
+    }
+
+    sqlx::query(
+        r#"
+        UPDATE sales
+        SET status = 'completed',
+            completed_by = $1,
+            completed_at = NOW(),
+            checkout_idempotency_key = $2,
+            updated_at = NOW(),
+            version = version + 1
+        WHERE id = $3
+          AND company_id = $4
+          AND status = 'draft'
+        "#,
+    )
+    .bind(user_id)
+    .bind(request.idempotency_key)
+    .bind(sale_id)
+    .bind(company_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(SalesError::Database)?;
+
+    // Load the completed sale within the same transaction.
+    tx.commit().await.map_err(SalesError::Database)?;
+
+    let sale = load_sale(db, company_id, sale_id).await?;
+
+    Ok(CheckoutOutcome {
+        sale,
+        replayed: false,
+    })
+}
+use rust_decimal::Decimal;
+use sqlx::{Error, PgPool, Row};
+use uuid::Uuid;
+
+use crate::models::sales_returns::*;
+
+#[derive(Debug)]
+pub enum SalesReturnsError {
+    Database(Error),
+    NotFound,
+    InvalidRequest,
+    InvalidReason,
+    InvalidQuantity,
+    InvalidCondition,
+    InvalidPayment,
+    InvalidPaymentMethod,
+    SaleNotCompleted,
+    SaleAlreadyVoided,
+    SaleHasReturns,
+    ReturnQuantityExceeded,
+    RefundExceedsEligibleAmount,
+    DecimalQuantityNotAllowed,
+    IdempotencyConflict,
+    PermissionDenied,
+}
+
+pub struct IdempotentOutcome<T> {
+    pub value: T,
+    pub replayed: bool,
+}
+
+fn clean(value: Option<String>) -> Option<String> {
+    value.and_then(|v| {
+        let v = v.trim().to_string();
+        if v.is_empty() { None } else { Some(v) }
+    })
+}
+
+fn valid_decimal(value: Decimal) -> bool {
+    value.scale() <= 4 && value.abs() < Decimal::from(1_000_000_000_000_000_i64)
+}
+
+async fn has_permission(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    company_id: Uuid,
+    user_id: Uuid,
+    permission: &str,
+) -> Result<bool, SalesReturnsError> {
+    sqlx::query_scalar(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM user_roles ur
+            JOIN roles r
+              ON r.id = ur.role_id
+             AND r.company_id = ur.company_id
+            JOIN role_permissions rp ON rp.role_id = r.id
+            JOIN permissions p ON p.id = rp.permission_id
+            WHERE ur.user_id = $1
+              AND ur.company_id = $2
+              AND r.is_active = TRUE
+              AND (ur.expires_at IS NULL OR ur.expires_at > NOW())
+              AND p.permission_key = $3
+        )
+        "#,
+    )
+    .bind(user_id)
+    .bind(company_id)
+    .bind(permission)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(SalesReturnsError::Database)
+}
+
+async fn require_permission(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    company_id: Uuid,
+    user_id: Uuid,
+    permission: &str,
+) -> Result<(), SalesReturnsError> {
+    if !has_permission(tx, company_id, user_id, permission).await? {
+        return Err(SalesReturnsError::PermissionDenied);
+    }
+    Ok(())
+}
+
+async fn load_return(
+    db: &PgPool,
+    company_id: Uuid,
+    return_id: i64,
+) -> Result<SaleReturn, SalesReturnsError> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, sale_id, location_id, reason, notes, created_by, created_at
+        FROM sale_returns
+        WHERE id = $1 AND company_id = $2
+        "#,
+    )
+    .bind(return_id)
+    .bind(company_id)
+    .fetch_optional(db)
+    .await
+    .map_err(SalesReturnsError::Database)?
+    .ok_or(SalesReturnsError::NotFound)?;
+
+    let items = sqlx::query(
+        r#"
+        SELECT id, sale_item_id, variant_id, product_name, variant_name,
+               quantity, item_condition, refundable_amount
+        FROM sale_return_items
+        WHERE return_id = $1 AND company_id = $2
+        ORDER BY id
+        "#,
+    )
+    .bind(return_id)
+    .bind(company_id)
+    .fetch_all(db)
+    .await
+    .map_err(SalesReturnsError::Database)?
+    .into_iter()
+    .map(|r| {
+        Ok(SaleReturnItem {
+            id: r.try_get("id").map_err(SalesReturnsError::Database)?,
+            sale_item_id: r
+                .try_get("sale_item_id")
+                .map_err(SalesReturnsError::Database)?,
+            variant_id: r
+                .try_get("variant_id")
+                .map_err(SalesReturnsError::Database)?,
+            product_name: r
+                .try_get("product_name")
+                .map_err(SalesReturnsError::Database)?,
+            variant_name: r
+                .try_get("variant_name")
+                .map_err(SalesReturnsError::Database)?,
+            quantity: r.try_get("quantity").map_err(SalesReturnsError::Database)?,
+            item_condition: r
+                .try_get("item_condition")
+                .map_err(SalesReturnsError::Database)?,
+            refundable_amount: r
+                .try_get("refundable_amount")
+                .map_err(SalesReturnsError::Database)?,
+        })
+    })
+    .collect::<Result<Vec<_>, SalesReturnsError>>()?;
+
+    Ok(SaleReturn {
+        id: row.try_get("id").map_err(SalesReturnsError::Database)?,
+        sale_id: row
+            .try_get("sale_id")
+            .map_err(SalesReturnsError::Database)?,
+        location_id: row
+            .try_get("location_id")
+            .map_err(SalesReturnsError::Database)?,
+        reason: row.try_get("reason").map_err(SalesReturnsError::Database)?,
+        notes: row.try_get("notes").map_err(SalesReturnsError::Database)?,
+        created_by: row
+            .try_get("created_by")
+            .map_err(SalesReturnsError::Database)?,
+        created_at: row
+            .try_get("created_at")
+            .map_err(SalesReturnsError::Database)?,
+        items,
+    })
+}
+
+pub async fn create_return(
+    db: &PgPool,
+    company_id: Uuid,
+    user_id: Uuid,
+    sale_id: i64,
+    request: CreateSaleReturnRequest,
+) -> Result<IdempotentOutcome<SaleReturn>, SalesReturnsError> {
+    let reason = request.reason.trim().to_string();
+
+    if reason.is_empty() || reason.len() > 1000 {
+        return Err(SalesReturnsError::InvalidReason);
+    }
+
+    if request.items.is_empty() {
+        return Err(SalesReturnsError::InvalidRequest);
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    for item in &request.items {
+        if !seen.insert(item.sale_item_id)
+            || item.quantity <= Decimal::ZERO
+            || !valid_decimal(item.quantity)
+        {
+            return Err(SalesReturnsError::InvalidQuantity);
+        }
+
+        if !["resellable", "damaged", "unsellable"].contains(&item.item_condition.as_str()) {
+            return Err(SalesReturnsError::InvalidCondition);
+        }
+    }
+
+    let mut sorted_items = request
+        .items
+        .iter()
+        .map(|i| {
+            (
+                i.sale_item_id,
+                i.quantity.to_string(),
+                i.item_condition.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    sorted_items.sort();
+
+    let legacy_fingerprint = format!(
+        "{}|{}|{}",
+        reason,
+        clean(request.notes.clone()).unwrap_or_default(),
+        serde_json::to_string(&sorted_items).map_err(|_| SalesReturnsError::InvalidRequest)?
+    );
+    let fingerprint = format!("v2|sale:{}|{}", sale_id, legacy_fingerprint);
+
+    let mut tx = db.begin().await.map_err(SalesReturnsError::Database)?;
+
+    require_permission(&mut tx, company_id, user_id, "sales.return").await?;
+
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("return:{}:{}", company_id, request.idempotency_key))
+        .execute(&mut *tx)
+        .await
+        .map_err(SalesReturnsError::Database)?;
+
+    if let Some(existing) = sqlx::query(
+        r#"
+        SELECT id, sale_id, request_fingerprint
+        FROM sale_returns
+        WHERE company_id = $1 AND idempotency_key = $2
+        "#,
+    )
+    .bind(company_id)
+    .bind(request.idempotency_key)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(SalesReturnsError::Database)?
+    {
+        let existing_sale_id: i64 = existing
+            .try_get("sale_id")
+            .map_err(SalesReturnsError::Database)?;
+        let existing_fingerprint: String = existing
+            .try_get("request_fingerprint")
+            .map_err(SalesReturnsError::Database)?;
+        if existing_sale_id != sale_id
+            || (existing_fingerprint != fingerprint && existing_fingerprint != legacy_fingerprint)
+        {
+            return Err(SalesReturnsError::IdempotencyConflict);
+        }
+
+        let existing_id: i64 = existing
+            .try_get("id")
+            .map_err(SalesReturnsError::Database)?;
+        tx.commit().await.map_err(SalesReturnsError::Database)?;
+        return Ok(IdempotentOutcome {
+            value: load_return(db, company_id, existing_id).await?,
+            replayed: true,
+        });
+    }
+
+    let key_used = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM sale_returns WHERE company_id=$1 AND idempotency_key=$2)",
+    )
+    .bind(company_id)
+    .bind(request.idempotency_key)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(SalesReturnsError::Database)?;
+
+    if key_used {
+        return Err(SalesReturnsError::IdempotencyConflict);
+    }
+
+    let sale = sqlx::query(
+        r#"
+        SELECT id, location_id, status
+        FROM sales
+        WHERE id = $1 AND company_id = $2
+        FOR UPDATE
+        "#,
+    )
+    .bind(sale_id)
+    .bind(company_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(SalesReturnsError::Database)?
+    .ok_or(SalesReturnsError::NotFound)?;
+
+    let status: String = sale
+        .try_get("status")
+        .map_err(SalesReturnsError::Database)?;
+    let location_id: i64 = sale
+        .try_get("location_id")
+        .map_err(SalesReturnsError::Database)?;
+
+    if status != "completed" {
+        return Err(SalesReturnsError::SaleNotCompleted);
+    }
+
+    let voided = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM sale_voids WHERE company_id=$1 AND sale_id=$2)",
+    )
+    .bind(company_id)
+    .bind(sale_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(SalesReturnsError::Database)?;
+
+    if voided {
+        return Err(SalesReturnsError::SaleAlreadyVoided);
+    }
+
+    let return_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO sale_returns (
+            company_id, sale_id, location_id, reason, notes,
+            idempotency_key, request_fingerprint, created_by
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+        RETURNING id
+        "#,
+    )
+    .bind(company_id)
+    .bind(sale_id)
+    .bind(location_id)
+    .bind(&reason)
+    .bind(clean(request.notes))
+    .bind(request.idempotency_key)
+    .bind(&fingerprint)
+    .bind(user_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(SalesReturnsError::Database)?;
+
+    let mut return_items = request.items;
+    return_items.sort_by_key(|item| item.sale_item_id);
+    let mut stock_restorations: Vec<(i64, Decimal)> = Vec::new();
+
+    for item in return_items {
+        let original = sqlx::query(
+            r#"
+            SELECT
+                si.id, si.variant_id, si.product_name, si.variant_name,
+                si.quantity AS sold_quantity,
+                si.line_total,
+                si.unit_code,
+                u.allows_decimal,
+                p.track_inventory
+            FROM sale_items si
+            JOIN product_variants pv
+              ON pv.id = si.variant_id AND pv.company_id = si.company_id
+            JOIN products p
+              ON p.id = pv.product_id AND p.company_id = pv.company_id
+            JOIN units_of_measure u
+              ON u.code = si.unit_code
+            WHERE si.id = $1
+              AND si.company_id = $2
+              AND si.sale_id = $3
+            FOR UPDATE OF si
+            "#,
+        )
+        .bind(item.sale_item_id)
+        .bind(company_id)
+        .bind(sale_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(SalesReturnsError::Database)?
+        .ok_or(SalesReturnsError::InvalidRequest)?;
+
+        let sold_quantity: Decimal = original
+            .try_get("sold_quantity")
+            .map_err(SalesReturnsError::Database)?;
+        let line_total: Decimal = original
+            .try_get("line_total")
+            .map_err(SalesReturnsError::Database)?;
+        let allows_decimal: bool = original
+            .try_get("allows_decimal")
+            .map_err(SalesReturnsError::Database)?;
+        let track_inventory: bool = original
+            .try_get("track_inventory")
+            .map_err(SalesReturnsError::Database)?;
+
+        if !allows_decimal && item.quantity.fract() != Decimal::ZERO {
+            return Err(SalesReturnsError::DecimalQuantityNotAllowed);
+        }
+
+        let previously_returned: Decimal = sqlx::query_scalar(
+            r#"
+            SELECT COALESCE(SUM(quantity), 0)
+            FROM sale_return_items
+            WHERE company_id = $1 AND sale_item_id = $2
+            "#,
+        )
+        .bind(company_id)
+        .bind(item.sale_item_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(SalesReturnsError::Database)?;
+
+        if previously_returned + item.quantity > sold_quantity {
+            return Err(SalesReturnsError::ReturnQuantityExceeded);
+        }
+
+        let unit_value = (line_total / sold_quantity).round_dp(4);
+        let refundable_amount = (unit_value * item.quantity).round_dp(4);
+
+        let variant_id: i64 = original
+            .try_get("variant_id")
+            .map_err(SalesReturnsError::Database)?;
+        let product_name: String = original
+            .try_get("product_name")
+            .map_err(SalesReturnsError::Database)?;
+        let variant_name: String = original
+            .try_get("variant_name")
+            .map_err(SalesReturnsError::Database)?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO sale_return_items (
+                company_id, return_id, sale_item_id, variant_id,
+                product_name, variant_name, quantity,
+                item_condition, refundable_amount
+            )
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+            "#,
+        )
+        .bind(company_id)
+        .bind(return_id)
+        .bind(item.sale_item_id)
+        .bind(variant_id)
+        .bind(&product_name)
+        .bind(&variant_name)
+        .bind(item.quantity)
+        .bind(&item.item_condition)
+        .bind(refundable_amount)
+        .execute(&mut *tx)
+        .await
+        .map_err(SalesReturnsError::Database)?;
+
+        if track_inventory && item.item_condition == "resellable" {
+            stock_restorations.push((variant_id, item.quantity));
+        }
+    }
+
+    stock_restorations.sort_by_key(|(variant_id, _)| *variant_id);
+    for (variant_id, quantity) in stock_restorations {
+        sqlx::query(
+            r#"
+            INSERT INTO stock_balances (
+                company_id, location_id, variant_id,
+                quantity_on_hand, reserved_quantity, version
+            )
+            VALUES ($1,$2,$3,0,0,1)
+            ON CONFLICT (location_id, variant_id) DO NOTHING
+            "#,
+        )
+        .bind(company_id)
+        .bind(location_id)
+        .bind(variant_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(SalesReturnsError::Database)?;
+
+        sqlx::query(
+            r#"
+            UPDATE stock_balances
+            SET quantity_on_hand = quantity_on_hand + $1,
+                version = version + 1,
+                updated_at = NOW()
+            WHERE company_id = $2 AND location_id = $3 AND variant_id = $4
+            "#,
+        )
+        .bind(quantity)
+        .bind(company_id)
+        .bind(location_id)
+        .bind(variant_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(SalesReturnsError::Database)?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO stock_movements (
+                company_id, location_id, variant_id,
+                movement_type, quantity_delta,
+                reference_type, reference_id,
+                idempotency_key, notes, created_by
+            )
+            VALUES ($1,$2,$3,'sale_return',$4,'sale_return',$5,$6,$7,$8)
+            "#,
+        )
+        .bind(company_id)
+        .bind(location_id)
+        .bind(variant_id)
+        .bind(quantity)
+        .bind(return_id.to_string())
+        .bind(Uuid::new_v4())
+        .bind(format!("Return against sale {}", sale_id))
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(SalesReturnsError::Database)?;
+    }
+
+    tx.commit().await.map_err(SalesReturnsError::Database)?;
+    Ok(IdempotentOutcome {
+        value: load_return(db, company_id, return_id).await?,
+        replayed: false,
+    })
+}
+
+pub async fn refund_return(
+    db: &PgPool,
+    company_id: Uuid,
+    user_id: Uuid,
+    return_id: i64,
+    request: CreateRefundRequest,
+) -> Result<IdempotentOutcome<SaleRefund>, SalesReturnsError> {
+    if request.amount <= Decimal::ZERO || !valid_decimal(request.amount) {
+        return Err(SalesReturnsError::InvalidPayment);
+    }
+
+    if !["cash", "card", "mobile_money", "other"].contains(&request.payment_method.as_str()) {
+        return Err(SalesReturnsError::InvalidPaymentMethod);
+    }
+
+    let legacy_fingerprint = format!(
+        "{}|{}|{}|{}",
+        request.payment_method,
+        request.amount,
+        clean(request.reference.clone()).unwrap_or_default(),
+        clean(request.notes.clone()).unwrap_or_default()
+    );
+    let fingerprint = format!("v2|return:{}|{}", return_id, legacy_fingerprint);
+
+    let mut tx = db.begin().await.map_err(SalesReturnsError::Database)?;
+
+    require_permission(&mut tx, company_id, user_id, "sales.refund").await?;
+
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("refund:{}:{}", company_id, request.idempotency_key))
+        .execute(&mut *tx)
+        .await
+        .map_err(SalesReturnsError::Database)?;
+
+    if let Some(existing) = sqlx::query(
+        r#"
+        SELECT id, sale_id, return_id, void_id, payment_method,
+               amount, reference, notes, refunded_by, created_at,
+               request_fingerprint
+        FROM sale_refunds
+        WHERE company_id=$1 AND idempotency_key=$2
+        "#,
+    )
+    .bind(company_id)
+    .bind(request.idempotency_key)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(SalesReturnsError::Database)?
+    {
+        let existing_fingerprint: String = existing
+            .try_get("request_fingerprint")
+            .map_err(SalesReturnsError::Database)?;
+        let existing_return_id: Option<i64> = existing
+            .try_get("return_id")
+            .map_err(SalesReturnsError::Database)?;
+        if existing_return_id != Some(return_id)
+            || (existing_fingerprint != fingerprint && existing_fingerprint != legacy_fingerprint)
+        {
+            return Err(SalesReturnsError::IdempotencyConflict);
+        }
+
+        let result = refund_from_row(&existing)?;
+        tx.commit().await.map_err(SalesReturnsError::Database)?;
+        return Ok(IdempotentOutcome {
+            value: result,
+            replayed: true,
+        });
+    }
+
+    let sale_id: i64 =
+        sqlx::query_scalar("SELECT sale_id FROM sale_returns WHERE id=$1 AND company_id=$2")
+            .bind(return_id)
+            .bind(company_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(SalesReturnsError::Database)?
+            .ok_or(SalesReturnsError::NotFound)?;
+
+    let sale_status: String =
+        sqlx::query_scalar("SELECT status FROM sales WHERE id=$1 AND company_id=$2 FOR UPDATE")
+            .bind(sale_id)
+            .bind(company_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(SalesReturnsError::Database)?
+            .ok_or(SalesReturnsError::NotFound)?;
+
+    if sale_status != "completed" {
+        return Err(SalesReturnsError::SaleNotCompleted);
+    }
+
+    let sale_voided: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sale_voids WHERE company_id=$1 AND sale_id=$2)",
+    )
+    .bind(company_id)
+    .bind(sale_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(SalesReturnsError::Database)?;
+
+    if sale_voided {
+        return Err(SalesReturnsError::SaleAlreadyVoided);
+    }
+
+    let locked_sale_id: i64 = sqlx::query_scalar(
+        "SELECT sale_id FROM sale_returns WHERE id=$1 AND company_id=$2 FOR UPDATE",
+    )
+    .bind(return_id)
+    .bind(company_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(SalesReturnsError::Database)?
+    .ok_or(SalesReturnsError::NotFound)?;
+
+    if locked_sale_id != sale_id {
+        return Err(SalesReturnsError::InvalidRequest);
+    }
+
+    let eligible: Decimal = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(refundable_amount),0) FROM sale_return_items WHERE company_id=$1 AND return_id=$2",
+    )
+    .bind(company_id)
+    .bind(return_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(SalesReturnsError::Database)?;
+
+    let already_refunded: Decimal = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(amount),0) FROM sale_refunds WHERE company_id=$1 AND return_id=$2",
+    )
+    .bind(company_id)
+    .bind(return_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(SalesReturnsError::Database)?;
+
+    if already_refunded + request.amount > eligible {
+        return Err(SalesReturnsError::RefundExceedsEligibleAmount);
+    }
+
+    let id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO sale_refunds (
+            company_id, sale_id, return_id, payment_method, amount,
+            reference, notes, idempotency_key, request_fingerprint, refunded_by
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        RETURNING id
+        "#,
+    )
+    .bind(company_id)
+    .bind(sale_id)
+    .bind(return_id)
+    .bind(&request.payment_method)
+    .bind(request.amount)
+    .bind(clean(request.reference))
+    .bind(clean(request.notes))
+    .bind(request.idempotency_key)
+    .bind(&fingerprint)
+    .bind(user_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(SalesReturnsError::Database)?;
+
+    let row = sqlx::query(
+        "SELECT id, sale_id, return_id, void_id, payment_method, amount, reference, notes, refunded_by, created_at FROM sale_refunds WHERE id=$1 AND company_id=$2",
+    )
+    .bind(id)
+    .bind(company_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(SalesReturnsError::Database)?;
+
+    let result = refund_from_row(&row)?;
+    tx.commit().await.map_err(SalesReturnsError::Database)?;
+    Ok(IdempotentOutcome {
+        value: result,
+        replayed: false,
+    })
+}
+
+pub async fn void_sale(
+    db: &PgPool,
+    company_id: Uuid,
+    user_id: Uuid,
+    sale_id: i64,
+    request: VoidSaleRequest,
+) -> Result<IdempotentOutcome<SaleVoid>, SalesReturnsError> {
+    let reason = request.reason.trim().to_string();
+    if reason.is_empty() || reason.len() > 1000 || request.refunds.is_empty() {
+        return Err(SalesReturnsError::InvalidRequest);
+    }
+
+    let total_refunds = request
+        .refunds
+        .iter()
+        .try_fold(Decimal::ZERO, |sum, refund| {
+            if refund.amount <= Decimal::ZERO || !valid_decimal(refund.amount) {
+                return None;
+            }
+            if !["cash", "card", "mobile_money", "other"].contains(&refund.payment_method.as_str())
+            {
+                return None;
+            }
+            Some(sum + refund.amount)
+        })
+        .ok_or(SalesReturnsError::InvalidPayment)?;
+
+    let legacy_fingerprint = format!(
+        "{}|{}|{}",
+        reason,
+        clean(request.notes.clone()).unwrap_or_default(),
+        serde_json::to_string(&request.refunds).map_err(|_| SalesReturnsError::InvalidRequest)?
+    );
+    let fingerprint = format!("v2|sale:{}|{}", sale_id, legacy_fingerprint);
+
+    let mut tx = db.begin().await.map_err(SalesReturnsError::Database)?;
+
+    require_permission(&mut tx, company_id, user_id, "sales.void").await?;
+
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("void:{}:{}", company_id, request.idempotency_key))
+        .execute(&mut *tx)
+        .await
+        .map_err(SalesReturnsError::Database)?;
+
+    if let Some(row) = sqlx::query(
+        "SELECT id, sale_id, reason, notes, created_by, created_at, request_fingerprint FROM sale_voids WHERE company_id=$1 AND idempotency_key=$2",
+    )
+    .bind(company_id)
+    .bind(request.idempotency_key)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(SalesReturnsError::Database)?
+    {
+        let old_fingerprint: String = row.try_get("request_fingerprint").map_err(SalesReturnsError::Database)?;
+        let existing_sale_id: i64 = row.try_get("sale_id").map_err(SalesReturnsError::Database)?;
+        if existing_sale_id != sale_id
+            || (old_fingerprint != fingerprint && old_fingerprint != legacy_fingerprint)
+        {
+            return Err(SalesReturnsError::IdempotencyConflict);
+        }
+
+        let result = void_from_row(&row)?;
+        tx.commit().await.map_err(SalesReturnsError::Database)?;
+        return Ok(IdempotentOutcome { value: result, replayed: true });
+    }
+
+    let sale = sqlx::query(
+        "SELECT id, location_id, status, total_amount FROM sales WHERE id=$1 AND company_id=$2 FOR UPDATE",
+    )
+    .bind(sale_id)
+    .bind(company_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(SalesReturnsError::Database)?
+    .ok_or(SalesReturnsError::NotFound)?;
+
+    let status: String = sale
+        .try_get("status")
+        .map_err(SalesReturnsError::Database)?;
+    let location_id: i64 = sale
+        .try_get("location_id")
+        .map_err(SalesReturnsError::Database)?;
+    let sale_total: Decimal = sale
+        .try_get("total_amount")
+        .map_err(SalesReturnsError::Database)?;
+
+    if status != "completed" {
+        return Err(SalesReturnsError::SaleNotCompleted);
+    }
+
+    if total_refunds != sale_total {
+        return Err(SalesReturnsError::InvalidPayment);
+    }
+
+    let existing_void = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM sale_voids WHERE company_id=$1 AND sale_id=$2)",
+    )
+    .bind(company_id)
+    .bind(sale_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(SalesReturnsError::Database)?;
+
+    let existing_returns_or_refunds = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS (
+            SELECT 1 FROM sale_returns WHERE company_id=$1 AND sale_id=$2
+            UNION ALL
+            SELECT 1 FROM sale_refunds WHERE company_id=$1 AND sale_id=$2
+        )
+        "#,
+    )
+    .bind(company_id)
+    .bind(sale_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(SalesReturnsError::Database)?;
+
+    if existing_void {
+        return Err(SalesReturnsError::SaleAlreadyVoided);
+    }
+
+    if existing_returns_or_refunds {
+        return Err(SalesReturnsError::SaleHasReturns);
+    }
+
+    let void_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO sale_voids (
+            company_id, sale_id, reason, notes,
+            idempotency_key, request_fingerprint, created_by
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7)
+        RETURNING id
+        "#,
+    )
+    .bind(company_id)
+    .bind(sale_id)
+    .bind(&reason)
+    .bind(clean(request.notes))
+    .bind(request.idempotency_key)
+    .bind(&fingerprint)
+    .bind(user_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(SalesReturnsError::Database)?;
+
+    let items = sqlx::query(
+        r#"
+        SELECT si.variant_id, si.quantity, p.track_inventory
+        FROM sale_items si
+        JOIN product_variants pv
+          ON pv.id=si.variant_id AND pv.company_id=si.company_id
+        JOIN products p
+          ON p.id=pv.product_id AND p.company_id=pv.company_id
+        WHERE si.company_id=$1 AND si.sale_id=$2
+        ORDER BY si.variant_id
+        FOR UPDATE OF si
+        "#,
+    )
+    .bind(company_id)
+    .bind(sale_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(SalesReturnsError::Database)?;
+
+    for item in items {
+        let variant_id: i64 = item
+            .try_get("variant_id")
+            .map_err(SalesReturnsError::Database)?;
+        let quantity: Decimal = item
+            .try_get("quantity")
+            .map_err(SalesReturnsError::Database)?;
+        let track_inventory: bool = item
+            .try_get("track_inventory")
+            .map_err(SalesReturnsError::Database)?;
+
+        if !track_inventory {
+            continue;
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO stock_balances (
+                company_id, location_id, variant_id,
+                quantity_on_hand, reserved_quantity, version
+            )
+            VALUES ($1,$2,$3,0,0,1)
+            ON CONFLICT (location_id, variant_id) DO NOTHING
+            "#,
+        )
+        .bind(company_id)
+        .bind(location_id)
+        .bind(variant_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(SalesReturnsError::Database)?;
+
+        sqlx::query(
+            r#"
+            UPDATE stock_balances
+            SET quantity_on_hand=quantity_on_hand+$1,
+                version=version+1,
+                updated_at=NOW()
+            WHERE company_id=$2 AND location_id=$3 AND variant_id=$4
+            "#,
+        )
+        .bind(quantity)
+        .bind(company_id)
+        .bind(location_id)
+        .bind(variant_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(SalesReturnsError::Database)?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO stock_movements (
+                company_id, location_id, variant_id, movement_type,
+                quantity_delta, reference_type, reference_id,
+                idempotency_key, notes, created_by
+            )
+            VALUES ($1,$2,$3,'sale_return',$4,'sale_void',$5,$6,$7,$8)
+            "#,
+        )
+        .bind(company_id)
+        .bind(location_id)
+        .bind(variant_id)
+        .bind(quantity)
+        .bind(sale_id.to_string())
+        .bind(Uuid::new_v4())
+        .bind(format!("Stock reversal for voided sale {}", sale_id))
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(SalesReturnsError::Database)?;
+    }
+
+    for refund in request.refunds {
+        let refund_key = Uuid::new_v4();
+        let refund_fingerprint = format!(
+            "void:{}:{}:{}",
+            void_id, refund.payment_method, refund.amount
+        );
+
+        sqlx::query(
+            r#"
+            INSERT INTO sale_refunds (
+                company_id, sale_id, void_id, payment_method, amount,
+                reference, notes, idempotency_key, request_fingerprint, refunded_by
+            )
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+            "#,
+        )
+        .bind(company_id)
+        .bind(sale_id)
+        .bind(void_id)
+        .bind(&refund.payment_method)
+        .bind(refund.amount)
+        .bind(clean(refund.reference))
+        .bind(clean(refund.notes))
+        .bind(refund_key)
+        .bind(refund_fingerprint)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(SalesReturnsError::Database)?;
+    }
+
+    let row = sqlx::query(
+        "SELECT id, sale_id, reason, notes, created_by, created_at FROM sale_voids WHERE id=$1 AND company_id=$2",
+    )
+    .bind(void_id)
+    .bind(company_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(SalesReturnsError::Database)?;
+
+    let result = void_from_row(&row)?;
+    tx.commit().await.map_err(SalesReturnsError::Database)?;
+    Ok(IdempotentOutcome {
+        value: result,
+        replayed: false,
+    })
+}
+
+pub async fn list_returns(
+    db: &PgPool,
+    company_id: Uuid,
+    sale_id: i64,
+) -> Result<Vec<SaleReturn>, SalesReturnsError> {
+    let ids = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM sale_returns WHERE company_id=$1 AND sale_id=$2 ORDER BY created_at DESC",
+    )
+    .bind(company_id)
+    .bind(sale_id)
+    .fetch_all(db)
+    .await
+    .map_err(SalesReturnsError::Database)?;
+
+    let mut result = Vec::with_capacity(ids.len());
+    for id in ids {
+        result.push(load_return(db, company_id, id).await?);
+    }
+    Ok(result)
+}
+
+pub async fn list_refunds(
+    db: &PgPool,
+    company_id: Uuid,
+    sale_id: i64,
+) -> Result<Vec<SaleRefund>, SalesReturnsError> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, sale_id, return_id, void_id, payment_method,
+               amount, reference, notes, refunded_by, created_at
+        FROM sale_refunds
+        WHERE company_id=$1 AND sale_id=$2
+        ORDER BY created_at DESC
+        "#,
+    )
+    .bind(company_id)
+    .bind(sale_id)
+    .fetch_all(db)
+    .await
+    .map_err(SalesReturnsError::Database)?;
+
+    rows.iter().map(refund_from_row).collect()
+}
+
+pub async fn get_void(
+    db: &PgPool,
+    company_id: Uuid,
+    sale_id: i64,
+) -> Result<Option<SaleVoid>, SalesReturnsError> {
+    let row = sqlx::query(
+        "SELECT id, sale_id, reason, notes, created_by, created_at FROM sale_voids WHERE company_id=$1 AND sale_id=$2",
+    )
+    .bind(company_id)
+    .bind(sale_id)
+    .fetch_optional(db)
+    .await
+    .map_err(SalesReturnsError::Database)?;
+
+    row.as_ref().map(void_from_row).transpose()
+}
+
+fn refund_from_row(row: &sqlx::postgres::PgRow) -> Result<SaleRefund, SalesReturnsError> {
+    Ok(SaleRefund {
+        id: row.try_get("id").map_err(SalesReturnsError::Database)?,
+        sale_id: row
+            .try_get("sale_id")
+            .map_err(SalesReturnsError::Database)?,
+        return_id: row
+            .try_get("return_id")
+            .map_err(SalesReturnsError::Database)?,
+        void_id: row
+            .try_get("void_id")
+            .map_err(SalesReturnsError::Database)?,
+        payment_method: row
+            .try_get("payment_method")
+            .map_err(SalesReturnsError::Database)?,
+        amount: row.try_get("amount").map_err(SalesReturnsError::Database)?,
+        reference: row
+            .try_get("reference")
+            .map_err(SalesReturnsError::Database)?,
+        notes: row.try_get("notes").map_err(SalesReturnsError::Database)?,
+        refunded_by: row
+            .try_get("refunded_by")
+            .map_err(SalesReturnsError::Database)?,
+        created_at: row
+            .try_get("created_at")
+            .map_err(SalesReturnsError::Database)?,
+    })
+}
+
+fn void_from_row(row: &sqlx::postgres::PgRow) -> Result<SaleVoid, SalesReturnsError> {
+    Ok(SaleVoid {
+        id: row.try_get("id").map_err(SalesReturnsError::Database)?,
+        sale_id: row
+            .try_get("sale_id")
+            .map_err(SalesReturnsError::Database)?,
+        reason: row.try_get("reason").map_err(SalesReturnsError::Database)?,
+        notes: row.try_get("notes").map_err(SalesReturnsError::Database)?,
+        created_by: row
+            .try_get("created_by")
+            .map_err(SalesReturnsError::Database)?,
+        created_at: row
+            .try_get("created_at")
+            .map_err(SalesReturnsError::Database)?,
+    })
+}
+===== MODULE REGISTRATIONS =====
+pub mod auth;
+pub mod inventory;
+pub mod product;
+pub mod purchasing;
+pub mod sales;
+pub mod sales_returns;
+pub mod auth;
+pub mod health;
+pub mod inventory;
+pub mod product;
+pub mod purchasing;
+pub mod sales;
+pub mod sales_returns;
+pub mod variant;
+pub mod auth_service;
+pub mod inventory_service;
+pub mod product_service;
+pub mod purchasing_service;
+pub mod sales_returns_service;
+pub mod sales_service;
+===== ALL MIGRATIONS =====
+===== migrations/20261103080748_initial_schema.sql =====
+-- Add migration script here
+
+CREATE TABLE companies (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    -- Business identity
+    name VARCHAR(150) NOT NULL,
+    business_type VARCHAR(80),
+    description TEXT,
+
+    -- Contact information
+    email VARCHAR(255),
+    phone VARCHAR(30),
+    address TEXT,
+    city VARCHAR(100),
+
+    -- Regional configuration
+    country_code CHAR(2) NOT NULL DEFAULT 'ZW',
+    timezone VARCHAR(64) NOT NULL DEFAULT 'Africa/Harare',
+    locale VARCHAR(35) NOT NULL DEFAULT 'en-ZW',
+    default_currency CHAR(3) NOT NULL DEFAULT 'USD',
+
+    -- Account status
+    status VARCHAR(20) NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active', 'suspended', 'archived')),
+
+    -- Record management
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    version INTEGER NOT NULL DEFAULT 1
+        CHECK (version > 0)
+);
+
+CREATE INDEX idx_companies_status
+    ON companies(status);
+
+CREATE INDEX idx_companies_country
+    ON companies(country_code);
+
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    company_id UUID NOT NULL
+        REFERENCES companies(id) ON DELETE RESTRICT,
+
+    -- Identity
+    name VARCHAR(150) NOT NULL,
+    email VARCHAR(255),
+    username VARCHAR(100) NOT NULL,
+
+    -- Authentication
+    password_hash TEXT NOT NULL,
+
+    -- Authorisation
+    role VARCHAR(30) NOT NULL DEFAULT 'cashier'
+        CHECK (
+            role IN ('owner', 'admin', 'manager', 'cashier')
+        ),
+
+    status VARCHAR(20) NOT NULL DEFAULT 'active'
+        CHECK (
+            status IN ('active', 'inactive', 'suspended')
+        ),
+
+    -- Account activity
+    last_login_at TIMESTAMPTZ,
+
+    -- Record management
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    version INTEGER NOT NULL DEFAULT 1
+        CHECK (version > 0)
+);
+
+CREATE UNIQUE INDEX idx_users_company_username
+    ON users(company_id, LOWER(username));
+
+CREATE UNIQUE INDEX idx_users_company_email
+    ON users(company_id, LOWER(email))
+    WHERE email IS NOT NULL;
+
+CREATE INDEX idx_users_company_status
+    ON users(company_id, status);
+===== migrations/20261104063217_add_rbac.sql =====
+-- Add migration script here
+CREATE TABLE permissions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    permission_key VARCHAR(100) NOT NULL UNIQUE,
+    resource VARCHAR(50) NOT NULL,
+    action VARCHAR(50) NOT NULL,
+    description TEXT,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT permissions_resource_action_unique
+        UNIQUE (resource, action)
+);
+
+INSERT INTO permissions (permission_key, resource, action, description)
+VALUES
+    ('dashboard.view', 'dashboard', 'view', 'View business dashboard'),
+
+    ('products.view', 'products', 'view', 'View products'),
+    ('products.create', 'products', 'create', 'Create products'),
+    ('products.update', 'products', 'update', 'Update products'),
+    ('products.archive', 'products', 'archive', 'Archive products'),
+
+    ('categories.view', 'categories', 'view', 'View categories'),
+    ('categories.manage', 'categories', 'manage', 'Manage categories'),
+
+    ('inventory.view', 'inventory', 'view', 'View inventory'),
+    ('inventory.adjust', 'inventory', 'adjust', 'Adjust stock'),
+    ('inventory.receive', 'inventory', 'receive', 'Receive stock'),
+    ('inventory.transfer', 'inventory', 'transfer', 'Transfer stock'),
+
+    ('sales.view', 'sales', 'view', 'View sales'),
+    ('sales.create', 'sales', 'create', 'Create sales'),
+    ('sales.void', 'sales', 'void', 'Void sales'),
+    ('sales.refund', 'sales', 'refund', 'Process refunds'),
+    ('sales.discount', 'sales', 'discount', 'Apply discounts'),
+
+    ('customers.view', 'customers', 'view', 'View customers'),
+    ('customers.manage', 'customers', 'manage', 'Manage customers'),
+
+    ('suppliers.view', 'suppliers', 'view', 'View suppliers'),
+    ('suppliers.manage', 'suppliers', 'manage', 'Manage suppliers'),
+
+    ('purchases.view', 'purchases', 'view', 'View purchases'),
+    ('purchases.create', 'purchases', 'create', 'Create purchases'),
+
+    ('expenses.view', 'expenses', 'view', 'View expenses'),
+    ('expenses.manage', 'expenses', 'manage', 'Manage expenses'),
+
+    ('reports.view', 'reports', 'view', 'View reports'),
+    ('reports.export', 'reports', 'export', 'Export reports'),
+
+    ('users.view', 'users', 'view', 'View users'),
+    ('users.manage', 'users', 'manage', 'Manage users'),
+
+    ('roles.view', 'roles', 'view', 'View roles'),
+    ('roles.manage', 'roles', 'manage', 'Manage roles'),
+
+    ('settings.view', 'settings', 'view', 'View settings'),
+    ('settings.manage', 'settings', 'manage', 'Manage settings'),
+
+    ('audit_logs.view', 'audit_logs', 'view', 'View audit logs');
+
+
+CREATE TABLE roles (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    company_id UUID NOT NULL
+        REFERENCES companies(id) ON DELETE RESTRICT,
+
+    name VARCHAR(100) NOT NULL,
+    description TEXT,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+
+    CONSTRAINT roles_id_company_unique
+        UNIQUE (id, company_id)
+);
+
+CREATE UNIQUE INDEX idx_roles_company_name
+    ON roles(company_id, LOWER(name));
+
+CREATE TABLE role_permissions (
+    role_id UUID NOT NULL
+        REFERENCES roles(id) ON DELETE CASCADE,
+
+    permission_id UUID NOT NULL
+        REFERENCES permissions(id) ON DELETE RESTRICT,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    PRIMARY KEY (role_id, permission_id)
+);
+
+CREATE INDEX idx_role_permissions_permission
+    ON role_permissions(permission_id);
+
+ALTER TABLE users
+    ADD CONSTRAINT users_id_company_unique
+    UNIQUE (id, company_id);
+
+CREATE TABLE user_roles (
+    company_id UUID NOT NULL,
+
+    user_id UUID NOT NULL,
+    role_id UUID NOT NULL,
+
+    assigned_by UUID,
+    assigned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ,
+
+    PRIMARY KEY (user_id, role_id),
+
+    CONSTRAINT user_roles_user_company_fk
+        FOREIGN KEY (user_id, company_id)
+        REFERENCES users(id, company_id)
+        ON DELETE CASCADE,
+
+    CONSTRAINT user_roles_role_company_fk
+        FOREIGN KEY (role_id, company_id)
+        REFERENCES roles(id, company_id)
+        ON DELETE CASCADE,
+
+    CONSTRAINT user_roles_assigned_by_company_fk
+        FOREIGN KEY (assigned_by, company_id)
+        REFERENCES users(id, company_id)
+        ON DELETE SET NULL (assigned_by),
+
+    CONSTRAINT user_roles_expiry_check
+        CHECK (expires_at IS NULL OR expires_at > assigned_at)
+);
+
+CREATE INDEX idx_user_roles_company
+    ON user_roles(company_id);
+
+CREATE INDEX idx_user_roles_role
+    ON user_roles(role_id);
+
+ALTER TABLE users DROP COLUMN role;===== migrations/20261104082230_add_default_role_support.sql =====
+-- Role configuration and system role support
+
+ALTER TABLE roles
+ADD COLUMN is_system_role BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE roles
+ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE;
+
+-- Stable identifier for built-in roles.
+-- Custom roles can leave this NULL.
+ALTER TABLE roles
+ADD COLUMN role_key VARCHAR(50);
+
+-- Prevent empty or whitespace-only role names.
+ALTER TABLE roles
+ADD CONSTRAINT roles_name_not_empty
+CHECK (LENGTH(TRIM(name)) > 0);
+
+-- Role keys must use lowercase snake_case.
+ALTER TABLE roles
+ADD CONSTRAINT roles_role_key_format
+CHECK (
+    role_key IS NULL
+    OR role_key ~ '^[a-z][a-z0-9_]*$'
+);
+
+-- Every system role must have a stable key.
+ALTER TABLE roles
+ADD CONSTRAINT system_roles_require_key
+CHECK (
+    is_system_role = FALSE
+    OR role_key IS NOT NULL
+);
+
+-- A company cannot have duplicate role keys.
+CREATE UNIQUE INDEX idx_roles_company_role_key
+ON roles(company_id, role_key)
+WHERE role_key IS NOT NULL;
+
+-- Efficiently retrieve active roles belonging to a company.
+CREATE INDEX idx_roles_company_active
+ON roles(company_id, is_active);===== migrations/20261104083337_seed_default_roles.sql =====
+-- Add migration script here
+-- Create default roles for every existing company.
+
+INSERT INTO roles (
+    company_id,
+    name,
+    description,
+    is_system_role,
+    is_active,
+    role_key
+)
+SELECT
+    c.id,
+    r.name,
+    r.description,
+    TRUE,
+    TRUE,
+    r.role_key
+FROM companies c
+CROSS JOIN (
+    VALUES
+        ('Owner', 'Full access to all business operations.', 'owner'),
+        ('Admin', 'Business and staff administration.', 'admin'),
+        ('Manager', 'Day-to-day business operations.', 'manager'),
+        ('Cashier', 'Sales and customer service operations.', 'cashier')
+) AS r(name, description, role_key)
+ON CONFLICT (company_id, role_key)
+WHERE role_key IS NOT NULL
+DO NOTHING;
+
+-- Owner receives every permission.
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id
+FROM roles r
+CROSS JOIN permissions p
+WHERE r.role_key = 'owner'
+  AND r.is_system_role = TRUE
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+
+-- Admin receives all permissions except role and settings management.
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id
+FROM roles r
+CROSS JOIN permissions p
+WHERE r.role_key = 'admin'
+  AND r.is_system_role = TRUE
+  AND p.permission_key NOT IN (
+      'roles.manage',
+      'settings.manage'
+  )
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+
+-- Manager permissions.
+WITH manager_permissions(permission_key) AS (
+    VALUES
+        ('dashboard.view'),
+        ('categories.view'),
+        ('categories.manage'),
+        ('customers.view'),
+        ('customers.manage'),
+        ('products.view'),
+        ('products.create'),
+        ('products.update'),
+        ('inventory.view'),
+        ('inventory.adjust'),
+        ('inventory.receive'),
+        ('inventory.transfer'),
+        ('sales.view'),
+        ('sales.create'),
+        ('sales.discount'),
+        ('sales.refund'),
+        ('sales.void'),
+        ('suppliers.view'),
+        ('suppliers.manage'),
+        ('purchases.view'),
+        ('purchases.create'),
+        ('expenses.view'),
+        ('expenses.manage'),
+        ('reports.view'),
+        ('reports.export'),
+        ('users.view')
+)
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id
+FROM roles r
+JOIN manager_permissions mp ON TRUE
+JOIN permissions p ON p.permission_key = mp.permission_key
+WHERE r.role_key = 'manager'
+  AND r.is_system_role = TRUE
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+
+-- Cashier permissions.
+WITH cashier_permissions(permission_key) AS (
+    VALUES
+        ('dashboard.view'),
+        ('products.view'),
+        ('inventory.view'),
+        ('customers.view'),
+        ('customers.manage'),
+        ('sales.view'),
+        ('sales.create')
+)
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id
+FROM roles r
+JOIN cashier_permissions cp ON TRUE
+JOIN permissions p ON p.permission_key = cp.permission_key
+WHERE r.role_key = 'cashier'
+  AND r.is_system_role = TRUE
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+===== migrations/20261105130108_create_products.sql =====
+-- Add migration script here
+CREATE TABLE products (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+
+    company_id UUID NOT NULL,
+
+    name VARCHAR(150) NOT NULL,
+
+    price NUMERIC(19, 4) NOT NULL,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT fk_products_company
+        FOREIGN KEY (company_id)
+        REFERENCES companies(id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT chk_products_name_not_empty
+        CHECK (LENGTH(TRIM(name)) > 0),
+
+    CONSTRAINT chk_products_price_non_negative
+        CHECK (price >= 0)
+);
+
+-- A product name must be unique within its company,
+-- but different companies may use the same name.
+CREATE UNIQUE INDEX uq_products_company_name
+ON products (company_id, LOWER(name));
+
+-- Efficient company-scoped product queries.
+CREATE INDEX idx_products_company_id
+ON products (company_id);
+
+-- Efficient company-scoped alphabetical listings.
+CREATE INDEX idx_products_company_name
+ON products (company_id, name);===== migrations/20261105150953_inventory_foundation.sql =====
+-- Add migration script here
+
+-- ============================================================
+-- CHIMPPOS: PRODUCT CATALOGUE AND INVENTORY FOUNDATION
+-- ============================================================
+
+-- ------------------------------------------------------------
+-- 1. UNITS OF MEASURE
+-- Global reference catalogue shared by all companies.
+-- ------------------------------------------------------------
+
+CREATE TABLE units_of_measure (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    code VARCHAR(20) NOT NULL UNIQUE,
+    name VARCHAR(50) NOT NULL,
+    symbol VARCHAR(15) NOT NULL,
+    allows_decimal BOOLEAN NOT NULL DEFAULT FALSE,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+INSERT INTO units_of_measure (code, name, symbol, allows_decimal)
+VALUES
+    ('each', 'Each', 'ea', FALSE),
+    ('kg', 'Kilogram', 'kg', TRUE),
+    ('g', 'Gram', 'g', TRUE),
+    ('l', 'Litre', 'L', TRUE),
+    ('ml', 'Millilitre', 'ml', TRUE),
+    ('pack', 'Pack', 'pack', FALSE),
+    ('box', 'Box', 'box', FALSE),
+    ('dozen', 'Dozen', 'doz', FALSE);
+
+-- ------------------------------------------------------------
+-- 2. PRODUCT CATEGORIES
+-- Supports nested categories.
+-- ------------------------------------------------------------
+
+CREATE TABLE categories (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    company_id UUID NOT NULL,
+    parent_id BIGINT,
+    name VARCHAR(100) NOT NULL,
+    description TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    version INTEGER NOT NULL DEFAULT 1,
+
+    CONSTRAINT fk_categories_company
+        FOREIGN KEY (company_id)
+        REFERENCES companies(id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT uq_categories_id_company
+        UNIQUE (id, company_id),
+
+    CONSTRAINT fk_categories_parent
+        FOREIGN KEY (parent_id, company_id)
+        REFERENCES categories(id, company_id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT chk_categories_name
+        CHECK (LENGTH(TRIM(name)) > 0),
+
+    CONSTRAINT chk_categories_not_own_parent
+        CHECK (parent_id IS NULL OR parent_id <> id),
+
+    CONSTRAINT chk_categories_version
+        CHECK (version > 0)
+);
+
+CREATE UNIQUE INDEX uq_categories_company_name
+ON categories (company_id, LOWER(name));
+
+CREATE INDEX idx_categories_company
+ON categories (company_id);
+
+CREATE INDEX idx_categories_parent
+ON categories (company_id, parent_id);
+
+-- ------------------------------------------------------------
+-- 3. EXTEND EXISTING PRODUCTS
+-- Preserve existing product records and API compatibility.
+-- ------------------------------------------------------------
+
+ALTER TABLE products
+    ADD COLUMN category_id BIGINT,
+    ADD COLUMN unit_id BIGINT,
+    ADD COLUMN sku VARCHAR(80),
+    ADD COLUMN barcode VARCHAR(100),
+    ADD COLUMN description TEXT,
+    ADD COLUMN track_inventory BOOLEAN NOT NULL DEFAULT TRUE,
+    ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    ADD COLUMN archived_at TIMESTAMPTZ,
+    ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
+
+ALTER TABLE products
+    ADD CONSTRAINT uq_products_id_company
+        UNIQUE (id, company_id),
+
+    ADD CONSTRAINT fk_products_category
+        FOREIGN KEY (category_id, company_id)
+        REFERENCES categories(id, company_id)
+        ON DELETE RESTRICT,
+
+    ADD CONSTRAINT fk_products_unit
+        FOREIGN KEY (unit_id)
+        REFERENCES units_of_measure(id)
+        ON DELETE RESTRICT,
+
+    ADD CONSTRAINT chk_products_version
+        CHECK (version > 0);
+
+CREATE UNIQUE INDEX uq_products_company_sku
+ON products (company_id, LOWER(sku))
+WHERE sku IS NOT NULL;
+
+CREATE UNIQUE INDEX uq_products_company_barcode
+ON products (company_id, barcode)
+WHERE barcode IS NOT NULL;
+
+CREATE INDEX idx_products_category
+ON products (company_id, category_id);
+
+CREATE INDEX idx_products_active
+ON products (company_id, is_active);
+
+-- ------------------------------------------------------------
+-- 4. PRODUCT VARIANTS
+-- Each variant is independently sellable and stock-tracked.
+-- ------------------------------------------------------------
+
+CREATE TABLE product_variants (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    company_id UUID NOT NULL,
+    product_id BIGINT NOT NULL,
+    name VARCHAR(100) NOT NULL DEFAULT 'Default',
+    sku VARCHAR(80),
+    barcode VARCHAR(100),
+    unit_id BIGINT NOT NULL,
+    selling_price NUMERIC(19, 4) NOT NULL,
+    cost_price NUMERIC(19, 4),
+    is_default BOOLEAN NOT NULL DEFAULT FALSE,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    version INTEGER NOT NULL DEFAULT 1,
+
+    CONSTRAINT fk_variants_product
+        FOREIGN KEY (product_id, company_id)
+        REFERENCES products(id, company_id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT fk_variants_company
+        FOREIGN KEY (company_id)
+        REFERENCES companies(id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT fk_variants_unit
+        FOREIGN KEY (unit_id)
+        REFERENCES units_of_measure(id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT uq_variants_id_company
+        UNIQUE (id, company_id),
+
+    CONSTRAINT chk_variants_name
+        CHECK (LENGTH(TRIM(name)) > 0),
+
+    CONSTRAINT chk_variants_selling_price
+        CHECK (selling_price >= 0),
+
+    CONSTRAINT chk_variants_cost_price
+        CHECK (cost_price IS NULL OR cost_price >= 0),
+
+    CONSTRAINT chk_variants_version
+        CHECK (version > 0)
+);
+
+CREATE UNIQUE INDEX uq_variants_company_sku
+ON product_variants (company_id, LOWER(sku))
+WHERE sku IS NOT NULL;
+
+CREATE UNIQUE INDEX uq_variants_company_barcode
+ON product_variants (company_id, barcode)
+WHERE barcode IS NOT NULL;
+
+CREATE UNIQUE INDEX uq_variants_default
+ON product_variants (product_id)
+WHERE is_default = TRUE;
+
+CREATE INDEX idx_variants_product
+ON product_variants (company_id, product_id);
+
+-- ------------------------------------------------------------
+-- 5. MIGRATE EXISTING PRODUCTS INTO DEFAULT VARIANTS
+-- Existing products receive a default unit and variant.
+-- ------------------------------------------------------------
+
+UPDATE products
+SET unit_id = (
+    SELECT id
+    FROM units_of_measure
+    WHERE code = 'each'
+)
+WHERE unit_id IS NULL;
+
+INSERT INTO product_variants (
+    company_id,
+    product_id,
+    name,
+    sku,
+    barcode,
+    unit_id,
+    selling_price,
+    is_default
+)
+SELECT
+    p.company_id,
+    p.id,
+    'Default',
+    p.sku,
+    p.barcode,
+    p.unit_id,
+    p.price,
+    TRUE
+FROM products p;
+
+-- ------------------------------------------------------------
+-- 6. INVENTORY LOCATIONS
+-- Every company receives a default Main Store location.
+-- ------------------------------------------------------------
+
+CREATE TABLE inventory_locations (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    company_id UUID NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    code VARCHAR(30) NOT NULL,
+    location_type VARCHAR(30) NOT NULL DEFAULT 'store',
+    address TEXT,
+    is_default BOOLEAN NOT NULL DEFAULT FALSE,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    version INTEGER NOT NULL DEFAULT 1,
+
+    CONSTRAINT fk_locations_company
+        FOREIGN KEY (company_id)
+        REFERENCES companies(id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT uq_locations_id_company
+        UNIQUE (id, company_id),
+
+    CONSTRAINT uq_locations_company_code
+        UNIQUE (company_id, code),
+
+    CONSTRAINT chk_locations_type
+        CHECK (location_type IN ('store', 'warehouse')),
+
+    CONSTRAINT chk_locations_name
+        CHECK (LENGTH(TRIM(name)) > 0),
+
+    CONSTRAINT chk_locations_version
+        CHECK (version > 0)
+);
+
+CREATE UNIQUE INDEX uq_locations_default
+ON inventory_locations(company_id)
+WHERE is_default = TRUE;
+
+CREATE INDEX idx_locations_company_active
+ON inventory_locations(company_id, is_active);
+
+INSERT INTO inventory_locations (
+    company_id,
+    name,
+    code,
+    location_type,
+    is_default
+)
+SELECT
+    id,
+    'Main Store',
+    'MAIN',
+    'store',
+    TRUE
+FROM companies;
+
+-- ------------------------------------------------------------
+-- 7. STOCK BALANCES
+-- Current stock for each variant at each location.
+-- ------------------------------------------------------------
+
+CREATE TABLE stock_balances (
+    company_id UUID NOT NULL,
+    location_id BIGINT NOT NULL,
+    variant_id BIGINT NOT NULL,
+    quantity_on_hand NUMERIC(19, 4) NOT NULL DEFAULT 0,
+    reserved_quantity NUMERIC(19, 4) NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    version INTEGER NOT NULL DEFAULT 1,
+
+    PRIMARY KEY (location_id, variant_id),
+
+    CONSTRAINT fk_balances_location
+        FOREIGN KEY (location_id, company_id)
+        REFERENCES inventory_locations(id, company_id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT fk_balances_variant
+        FOREIGN KEY (variant_id, company_id)
+        REFERENCES product_variants(id, company_id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT chk_balances_quantity
+        CHECK (quantity_on_hand >= 0),
+
+    CONSTRAINT chk_balances_reserved
+        CHECK (
+            reserved_quantity >= 0
+            AND reserved_quantity <= quantity_on_hand
+        ),
+
+    CONSTRAINT chk_balances_version
+        CHECK (version > 0)
+);
+
+CREATE INDEX idx_balances_company
+ON stock_balances(company_id);
+
+CREATE INDEX idx_balances_variant
+ON stock_balances(company_id, variant_id);
+
+-- Create an initial zero balance for each variant
+-- at its company's default location.
+
+INSERT INTO stock_balances (
+    company_id,
+    location_id,
+    variant_id
+)
+SELECT
+    v.company_id,
+    l.id,
+    v.id
+FROM product_variants v
+JOIN inventory_locations l
+    ON l.company_id = v.company_id
+   AND l.is_default = TRUE;
+
+-- ------------------------------------------------------------
+-- 8. STOCK MOVEMENTS
+-- Permanent record of every stock change.
+-- quantity_delta is positive for incoming stock
+-- and negative for outgoing stock.
+-- ------------------------------------------------------------
+
+CREATE TABLE stock_movements (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    company_id UUID NOT NULL,
+    location_id BIGINT NOT NULL,
+    variant_id BIGINT NOT NULL,
+    movement_type VARCHAR(40) NOT NULL,
+    quantity_delta NUMERIC(19, 4) NOT NULL,
+    reference_type VARCHAR(40),
+    reference_id VARCHAR(100),
+    idempotency_key UUID,
+    notes TEXT,
+    created_by UUID,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT fk_movements_company
+        FOREIGN KEY (company_id)
+        REFERENCES companies(id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT fk_movements_location
+        FOREIGN KEY (location_id, company_id)
+        REFERENCES inventory_locations(id, company_id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT fk_movements_variant
+        FOREIGN KEY (variant_id, company_id)
+        REFERENCES product_variants(id, company_id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT fk_movements_user
+        FOREIGN KEY (created_by, company_id)
+        REFERENCES users(id, company_id)
+        ON DELETE SET NULL (created_by),
+
+    CONSTRAINT chk_movements_type
+        CHECK (
+            movement_type IN (
+                'opening_balance',
+                'purchase_receipt',
+                'sale',
+                'sale_return',
+                'purchase_return',
+                'adjustment_in',
+                'adjustment_out',
+                'transfer_in',
+                'transfer_out',
+                'count_adjustment'
+            )
+        ),
+
+    CONSTRAINT chk_movements_quantity
+        CHECK (quantity_delta <> 0)
+);
+
+CREATE UNIQUE INDEX uq_movements_idempotency
+ON stock_movements(company_id, idempotency_key)
+WHERE idempotency_key IS NOT NULL;
+
+CREATE INDEX idx_movements_variant_date
+ON stock_movements(company_id, variant_id, created_at DESC);
+
+CREATE INDEX idx_movements_location_date
+ON stock_movements(company_id, location_id, created_at DESC);
+
+CREATE INDEX idx_movements_reference
+ON stock_movements(company_id, reference_type, reference_id);
+
+-- ------------------------------------------------------------
+-- 9. SUPPLIERS
+-- ------------------------------------------------------------
+
+CREATE TABLE suppliers (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    company_id UUID NOT NULL,
+    name VARCHAR(150) NOT NULL,
+    contact_person VARCHAR(150),
+    email VARCHAR(255),
+    phone VARCHAR(50),
+    address TEXT,
+    tax_number VARCHAR(80),
+    notes TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    version INTEGER NOT NULL DEFAULT 1,
+
+    CONSTRAINT fk_suppliers_company
+        FOREIGN KEY (company_id)
+        REFERENCES companies(id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT uq_suppliers_id_company
+        UNIQUE (id, company_id),
+
+    CONSTRAINT chk_suppliers_name
+        CHECK (LENGTH(TRIM(name)) > 0),
+
+    CONSTRAINT chk_suppliers_version
+        CHECK (version > 0)
+);
+
+CREATE INDEX idx_suppliers_company
+ON suppliers(company_id);
+
+CREATE INDEX idx_suppliers_company_name
+ON suppliers(company_id, LOWER(name));
+
+-- ------------------------------------------------------------
+-- 10. SUPPLIER PRODUCTS
+-- Links suppliers to the variants they supply.
+-- ------------------------------------------------------------
+
+CREATE TABLE supplier_products (
+    company_id UUID NOT NULL,
+    supplier_id BIGINT NOT NULL,
+    variant_id BIGINT NOT NULL,
+    supplier_sku VARCHAR(80),
+    last_cost_price NUMERIC(19, 4),
+    preferred_supplier BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    PRIMARY KEY (supplier_id, variant_id),
+
+    CONSTRAINT fk_supplier_products_supplier
+        FOREIGN KEY (supplier_id, company_id)
+        REFERENCES suppliers(id, company_id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT fk_supplier_products_variant
+        FOREIGN KEY (variant_id, company_id)
+        REFERENCES product_variants(id, company_id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT chk_supplier_products_cost
+        CHECK (last_cost_price IS NULL OR last_cost_price >= 0)
+);
+
+CREATE INDEX idx_supplier_products_variant
+ON supplier_products(company_id, variant_id);
+===== migrations/20261106055432_create_purchasing.sql =====
+-- Add migration script here
+
+-- ============================================================
+-- CHIMPPOS: PURCHASING AND GOODS RECEIVING
+-- ============================================================
+
+-- Company-specific purchase order numbering.
+CREATE TABLE purchase_order_sequences (
+    company_id UUID PRIMARY KEY,
+    next_number BIGINT NOT NULL DEFAULT 1,
+
+    CONSTRAINT chk_purchase_sequence_positive
+        CHECK (next_number > 0),
+
+    CONSTRAINT fk_purchase_sequence_company
+        FOREIGN KEY (company_id)
+        REFERENCES companies(id)
+        ON DELETE RESTRICT
+);
+
+-- ============================================================
+-- PURCHASE ORDERS
+-- ============================================================
+
+CREATE TABLE purchase_orders (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    company_id UUID NOT NULL,
+    supplier_id BIGINT NOT NULL,
+
+    order_number BIGINT NOT NULL,
+
+    status VARCHAR(30) NOT NULL DEFAULT 'draft',
+
+    order_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    expected_delivery_date DATE,
+
+    subtotal NUMERIC(19,4) NOT NULL DEFAULT 0,
+    tax_total NUMERIC(19,4) NOT NULL DEFAULT 0,
+    discount_total NUMERIC(19,4) NOT NULL DEFAULT 0,
+    total_amount NUMERIC(19,4) NOT NULL DEFAULT 0,
+
+    notes TEXT,
+
+    created_by UUID NOT NULL,
+    submitted_at TIMESTAMPTZ,
+    cancelled_at TIMESTAMPTZ,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    version INTEGER NOT NULL DEFAULT 1,
+
+    CONSTRAINT uq_purchase_orders_id_company
+        UNIQUE (id, company_id),
+
+    CONSTRAINT uq_purchase_orders_number
+        UNIQUE (company_id, order_number),
+
+    CONSTRAINT fk_purchase_orders_company
+        FOREIGN KEY (company_id)
+        REFERENCES companies(id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT fk_purchase_orders_supplier
+        FOREIGN KEY (supplier_id, company_id)
+        REFERENCES suppliers(id, company_id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT fk_purchase_orders_created_by
+        FOREIGN KEY (created_by, company_id)
+        REFERENCES users(id, company_id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT chk_purchase_order_status
+        CHECK (
+            status IN (
+                'draft',
+                'ordered',
+                'partially_received',
+                'received',
+                'cancelled'
+            )
+        ),
+
+    CONSTRAINT chk_purchase_order_amounts
+        CHECK (
+            subtotal >= 0
+            AND tax_total >= 0
+            AND discount_total >= 0
+            AND total_amount >= 0
+        ),
+
+    CONSTRAINT chk_purchase_order_total
+        CHECK (
+            total_amount = subtotal + tax_total - discount_total
+        ),
+
+    CONSTRAINT chk_purchase_order_discount
+        CHECK (discount_total <= subtotal + tax_total),
+
+    CONSTRAINT chk_purchase_order_dates
+        CHECK (
+            expected_delivery_date IS NULL
+            OR expected_delivery_date >= order_date
+        ),
+
+    CONSTRAINT chk_purchase_order_version
+        CHECK (version > 0)
+);
+
+CREATE INDEX idx_purchase_orders_company_date
+    ON purchase_orders(company_id, order_date DESC);
+
+CREATE INDEX idx_purchase_orders_supplier
+    ON purchase_orders(company_id, supplier_id);
+
+CREATE INDEX idx_purchase_orders_status
+    ON purchase_orders(company_id, status);
+
+-- ============================================================
+-- PURCHASE ORDER ITEMS
+-- ============================================================
+
+CREATE TABLE purchase_order_items (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    company_id UUID NOT NULL,
+    purchase_order_id BIGINT NOT NULL,
+    variant_id BIGINT NOT NULL,
+
+    -- Historical snapshots: do not rely on live product names.
+    product_name VARCHAR(150) NOT NULL,
+    variant_name VARCHAR(150) NOT NULL,
+    sku VARCHAR(80),
+    unit_code VARCHAR(30) NOT NULL,
+    unit_name VARCHAR(80) NOT NULL,
+
+    ordered_quantity NUMERIC(19,4) NOT NULL,
+    received_quantity NUMERIC(19,4) NOT NULL DEFAULT 0,
+
+    unit_cost NUMERIC(19,4) NOT NULL,
+    line_total NUMERIC(19,4) NOT NULL,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    version INTEGER NOT NULL DEFAULT 1,
+
+    CONSTRAINT uq_purchase_order_items_id_company
+        UNIQUE (id, company_id),
+
+    CONSTRAINT fk_purchase_items_order
+        FOREIGN KEY (purchase_order_id, company_id)
+        REFERENCES purchase_orders(id, company_id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT fk_purchase_items_variant
+        FOREIGN KEY (variant_id, company_id)
+        REFERENCES product_variants(id, company_id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT chk_purchase_item_quantity
+        CHECK (
+            ordered_quantity > 0
+            AND received_quantity >= 0
+            AND received_quantity <= ordered_quantity
+        ),
+
+    CONSTRAINT chk_purchase_item_cost
+        CHECK (unit_cost >= 0 AND line_total >= 0),
+
+    CONSTRAINT chk_purchase_item_line_total
+        CHECK (
+            line_total = ROUND(ordered_quantity * unit_cost, 4)
+        ),
+
+    CONSTRAINT chk_purchase_item_version
+        CHECK (version > 0),
+
+    CONSTRAINT chk_purchase_item_names
+        CHECK (
+            LENGTH(TRIM(product_name)) > 0
+            AND LENGTH(TRIM(variant_name)) > 0
+        )
+);
+
+CREATE INDEX idx_purchase_items_order
+    ON purchase_order_items(company_id, purchase_order_id);
+
+CREATE INDEX idx_purchase_items_variant
+    ON purchase_order_items(company_id, variant_id);
+
+-- ============================================================
+-- GOODS RECEIPTS
+-- A receipt represents one actual delivery against an order.
+-- ============================================================
+
+CREATE TABLE goods_receipts (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    company_id UUID NOT NULL,
+    purchase_order_id BIGINT NOT NULL,
+    location_id BIGINT NOT NULL,
+
+    receipt_number BIGINT NOT NULL,
+    idempotency_key UUID NOT NULL,
+
+    notes TEXT,
+
+    received_by UUID NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_goods_receipts_id_company
+        UNIQUE (id, company_id),
+
+    CONSTRAINT uq_goods_receipts_number
+        UNIQUE (company_id, receipt_number),
+
+    CONSTRAINT uq_goods_receipts_idempotency
+        UNIQUE (company_id, idempotency_key),
+
+    CONSTRAINT fk_goods_receipts_order
+        FOREIGN KEY (purchase_order_id, company_id)
+        REFERENCES purchase_orders(id, company_id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT fk_goods_receipts_location
+        FOREIGN KEY (location_id, company_id)
+        REFERENCES inventory_locations(id, company_id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT fk_goods_receipts_received_by
+        FOREIGN KEY (received_by, company_id)
+        REFERENCES users(id, company_id)
+        ON DELETE RESTRICT
+);
+
+CREATE INDEX idx_goods_receipts_order
+    ON goods_receipts(company_id, purchase_order_id, received_at DESC);
+
+CREATE INDEX idx_goods_receipts_location
+    ON goods_receipts(company_id, location_id, received_at DESC);
+
+-- ============================================================
+-- GOODS RECEIPT ITEMS
+-- ============================================================
+
+CREATE TABLE goods_receipt_items (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    company_id UUID NOT NULL,
+    goods_receipt_id BIGINT NOT NULL,
+    purchase_order_item_id BIGINT NOT NULL,
+
+    quantity_received NUMERIC(19,4) NOT NULL,
+    unit_cost NUMERIC(19,4) NOT NULL,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT fk_receipt_items_receipt
+        FOREIGN KEY (goods_receipt_id, company_id)
+        REFERENCES goods_receipts(id, company_id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT fk_receipt_items_order_item
+        FOREIGN KEY (purchase_order_item_id, company_id)
+        REFERENCES purchase_order_items(id, company_id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT chk_receipt_item_quantity
+        CHECK (quantity_received > 0),
+
+    CONSTRAINT chk_receipt_item_cost
+        CHECK (unit_cost >= 0),
+
+    CONSTRAINT uq_receipt_order_item
+        UNIQUE (goods_receipt_id, purchase_order_item_id)
+);
+
+CREATE INDEX idx_receipt_items_order_item
+    ON goods_receipt_items(company_id, purchase_order_item_id);
+===== migrations/20261106062106_add_purchasing_permissions.sql =====
+-- Add migration script here
+
+-- Add purchasing permissions.
+
+INSERT INTO permissions (
+    permission_key,
+    resource,
+    action,
+    description
+)
+VALUES
+    ('purchases.update', 'purchases', 'update',
+     'Update draft purchase orders'),
+
+    ('purchases.receive', 'purchases', 'receive',
+     'Receive goods against purchase orders'),
+
+    ('purchases.cancel', 'purchases', 'cancel',
+     'Cancel eligible purchase orders')
+
+ON CONFLICT (permission_key) DO NOTHING;
+
+
+-- Owner and Admin receive all purchasing permissions.
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id
+FROM roles r
+CROSS JOIN permissions p
+WHERE r.is_system_role = TRUE
+  AND r.role_key IN ('owner', 'admin')
+  AND p.permission_key IN (
+      'purchases.view',
+      'purchases.create',
+      'purchases.update',
+      'purchases.receive',
+      'purchases.cancel'
+  )
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+
+-- Manager can view, create, update and receive purchases.
+-- Cancellation remains restricted to Owner and Admin.
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id
+FROM roles r
+CROSS JOIN permissions p
+WHERE r.is_system_role = TRUE
+  AND r.role_key = 'manager'
+  AND p.permission_key IN (
+      'purchases.view',
+      'purchases.create',
+      'purchases.update',
+      'purchases.receive'
+  )
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+===== migrations/20261106064404_add_goods_receipt_sequences.sql =====
+-- Add migration script here
+CREATE TABLE goods_receipt_sequences (
+    company_id UUID PRIMARY KEY,
+    next_number BIGINT NOT NULL DEFAULT 1,
+
+    CONSTRAINT fk_goods_receipt_sequences_company
+        FOREIGN KEY (company_id)
+        REFERENCES companies(id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT chk_goods_receipt_sequences_next_number
+        CHECK (next_number > 0)
+);===== migrations/20261106091750_create_sales.sql =====
+-- Add migration script here
+
+-- ============================================================
+-- CHIMPPOS: SALES AND CHECKOUT
+-- ============================================================
+
+-- ------------------------------------------------------------
+-- 1. COMPANY-SPECIFIC SALE NUMBER SEQUENCES
+-- ------------------------------------------------------------
+
+CREATE TABLE sale_sequences (
+    company_id UUID PRIMARY KEY,
+    next_number BIGINT NOT NULL DEFAULT 1,
+
+    CONSTRAINT fk_sale_sequences_company
+        FOREIGN KEY (company_id)
+        REFERENCES companies(id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT chk_sale_sequence_positive
+        CHECK (next_number > 0)
+);
+
+-- ------------------------------------------------------------
+-- 2. SALES
+-- ------------------------------------------------------------
+
+CREATE TABLE sales (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    company_id UUID NOT NULL,
+    location_id BIGINT NOT NULL,
+
+    sale_number BIGINT NOT NULL,
+
+    status VARCHAR(20) NOT NULL DEFAULT 'draft',
+
+    subtotal NUMERIC(19,4) NOT NULL DEFAULT 0,
+    discount_total NUMERIC(19,4) NOT NULL DEFAULT 0,
+    tax_total NUMERIC(19,4) NOT NULL DEFAULT 0,
+    total_amount NUMERIC(19,4) NOT NULL DEFAULT 0,
+
+    notes TEXT,
+
+    created_by UUID NOT NULL,
+    completed_by UUID,
+    completed_at TIMESTAMPTZ,
+
+    cancelled_by UUID,
+    cancelled_at TIMESTAMPTZ,
+
+    checkout_idempotency_key UUID,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    version INTEGER NOT NULL DEFAULT 1,
+
+    CONSTRAINT uq_sales_id_company
+        UNIQUE (id, company_id),
+
+    CONSTRAINT uq_sales_number
+        UNIQUE (company_id, sale_number),
+
+    CONSTRAINT fk_sales_company
+        FOREIGN KEY (company_id)
+        REFERENCES companies(id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT fk_sales_location
+        FOREIGN KEY (location_id, company_id)
+        REFERENCES inventory_locations(id, company_id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT fk_sales_created_by
+        FOREIGN KEY (created_by, company_id)
+        REFERENCES users(id, company_id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT fk_sales_completed_by
+        FOREIGN KEY (completed_by, company_id)
+        REFERENCES users(id, company_id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT fk_sales_cancelled_by
+        FOREIGN KEY (cancelled_by, company_id)
+        REFERENCES users(id, company_id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT chk_sales_status
+        CHECK (
+            status IN ('draft', 'completed', 'cancelled')
+        ),
+
+    CONSTRAINT chk_sales_amounts
+        CHECK (
+            subtotal >= 0
+            AND discount_total >= 0
+            AND tax_total >= 0
+            AND total_amount >= 0
+        ),
+
+    CONSTRAINT chk_sales_total
+        CHECK (
+            total_amount = subtotal - discount_total + tax_total
+        ),
+
+    CONSTRAINT chk_sales_discount
+        CHECK (discount_total <= subtotal),
+
+    CONSTRAINT chk_sales_version
+        CHECK (version > 0),
+
+    CONSTRAINT chk_sales_completion
+        CHECK (
+            (status = 'completed'
+                AND completed_by IS NOT NULL
+                AND completed_at IS NOT NULL)
+            OR
+            (status <> 'completed'
+                AND completed_by IS NULL
+                AND completed_at IS NULL)
+        ),
+
+    CONSTRAINT chk_sales_cancellation
+        CHECK (
+            (status = 'cancelled'
+                AND cancelled_by IS NOT NULL
+                AND cancelled_at IS NOT NULL)
+            OR
+            (status <> 'cancelled'
+                AND cancelled_by IS NULL
+                AND cancelled_at IS NULL)
+        )
+);
+
+-- A checkout key may only complete one sale per company.
+CREATE UNIQUE INDEX uq_sales_checkout_idempotency
+ON sales(company_id, checkout_idempotency_key)
+WHERE checkout_idempotency_key IS NOT NULL;
+
+CREATE INDEX idx_sales_company_date
+ON sales(company_id, created_at DESC);
+
+CREATE INDEX idx_sales_company_status
+ON sales(company_id, status);
+
+CREATE INDEX idx_sales_location_date
+ON sales(company_id, location_id, created_at DESC);
+
+CREATE INDEX idx_sales_cashier_date
+ON sales(company_id, created_by, created_at DESC);
+
+-- ------------------------------------------------------------
+-- 3. SALE ITEMS
+-- Historical snapshots are stored independently of the
+-- current product catalogue.
+-- ------------------------------------------------------------
+
+CREATE TABLE sale_items (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+
+    company_id UUID NOT NULL,
+    sale_id BIGINT NOT NULL,
+    variant_id BIGINT NOT NULL,
+
+    product_name VARCHAR(150) NOT NULL,
+    variant_name VARCHAR(100) NOT NULL,
+
+    sku VARCHAR(80),
+    barcode VARCHAR(100),
+
+    unit_code VARCHAR(30) NOT NULL,
+    unit_name VARCHAR(80) NOT NULL,
+
+    quantity NUMERIC(19,4) NOT NULL,
+
+    unit_price NUMERIC(19,4) NOT NULL,
+
+    discount_amount NUMERIC(19,4) NOT NULL DEFAULT 0,
+
+    tax_rate NUMERIC(9,4) NOT NULL DEFAULT 0,
+    tax_amount NUMERIC(19,4) NOT NULL DEFAULT 0,
+
+    line_subtotal NUMERIC(19,4) NOT NULL,
+    line_total NUMERIC(19,4) NOT NULL,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_sale_items_id_company
+        UNIQUE (id, company_id),
+
+    CONSTRAINT fk_sale_items_sale
+        FOREIGN KEY (sale_id, company_id)
+        REFERENCES sales(id, company_id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT fk_sale_items_variant
+        FOREIGN KEY (variant_id, company_id)
+        REFERENCES product_variants(id, company_id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT chk_sale_item_quantity
+        CHECK (quantity > 0),
+
+    CONSTRAINT chk_sale_item_price
+        CHECK (unit_price >= 0),
+
+    CONSTRAINT chk_sale_item_discount
+        CHECK (
+            discount_amount >= 0
+            AND discount_amount <= line_subtotal
+        ),
+
+    CONSTRAINT chk_sale_item_tax_rate
+        CHECK (tax_rate >= 0 AND tax_rate <= 100),
+
+    CONSTRAINT chk_sale_item_tax
+        CHECK (tax_amount >= 0),
+
+    CONSTRAINT chk_sale_item_subtotal
+        CHECK (
+            line_subtotal = ROUND(quantity * unit_price, 4)
+        ),
+
+    CONSTRAINT chk_sale_item_total
+        CHECK (
+            line_total = line_subtotal - discount_amount + tax_amount
+        ),
+
+    CONSTRAINT chk_sale_item_names
+        CHECK (
+            LENGTH(TRIM(product_name)) > 0
+            AND LENGTH(TRIM(variant_name)) > 0
+            AND LENGTH(TRIM(unit_code)) > 0
+            AND LENGTH(TRIM(unit_name)) > 0
+        )
+);
+
+-- A variant appears once per sale. Multiple quantities
+-- are represented by the quantity column.
+CREATE UNIQUE INDEX uq_sale_items_variant
+ON sale_items(sale_id, variant_id);
+
+CREATE INDEX idx_sale_items_sale
+ON sale_items(company_id, sale_id);
+
+CREATE INDEX idx_sale_items_variant
+ON sale_items(company_id, variant_id);
+
+-- ------------------------------------------------------------
+-- 4. SALE PAYMENTS
+-- Amount is the amount applied to the sale.
+-- Tendered amount records what the customer handed over.
+-- Change is only applicable to cash.
+-- ------------------------------------------------------------
+
+CREATE TABLE sale_payments (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+
+    company_id UUID NOT NULL,
+    sale_id BIGINT NOT NULL,
+
+    payment_method VARCHAR(30) NOT NULL,
+
+    amount NUMERIC(19,4) NOT NULL,
+    tendered_amount NUMERIC(19,4) NOT NULL,
+    change_given NUMERIC(19,4) NOT NULL DEFAULT 0,
+
+    reference VARCHAR(150),
+    notes TEXT,
+
+    received_by UUID NOT NULL,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT fk_sale_payments_sale
+        FOREIGN KEY (sale_id, company_id)
+        REFERENCES sales(id, company_id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT fk_sale_payments_user
+        FOREIGN KEY (received_by, company_id)
+        REFERENCES users(id, company_id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT chk_sale_payment_method
+        CHECK (
+            payment_method IN (
+                'cash',
+                'card',
+                'mobile_money',
+                'other'
+            )
+        ),
+
+    CONSTRAINT chk_sale_payment_amount
+        CHECK (
+            amount > 0
+            AND tendered_amount >= amount
+            AND change_given >= 0
+        ),
+
+    CONSTRAINT chk_sale_payment_change
+        CHECK (
+            tendered_amount = amount + change_given
+        ),
+
+    CONSTRAINT chk_sale_payment_non_cash
+        CHECK (
+            payment_method = 'cash'
+            OR (
+                tendered_amount = amount
+                AND change_given = 0
+            )
+        )
+);
+
+CREATE INDEX idx_sale_payments_sale
+ON sale_payments(company_id, sale_id);
+
+CREATE INDEX idx_sale_payments_date
+ON sale_payments(company_id, created_at DESC);
+
+-- ------------------------------------------------------------
+-- 5. SALES PERMISSIONS
+-- ------------------------------------------------------------
+
+INSERT INTO permissions (
+    permission_key,
+    resource,
+    action,
+    description
+)
+VALUES
+    (
+        'sales.view',
+        'sales',
+        'view',
+        'View sales and receipts'
+    ),
+    (
+        'sales.create',
+        'sales',
+        'create',
+        'Create draft sales'
+    ),
+    (
+        'sales.update',
+        'sales',
+        'update',
+        'Update draft sales'
+    ),
+    (
+        'sales.checkout',
+        'sales',
+        'checkout',
+        'Complete sales and receive payments'
+    ),
+    (
+        'sales.cancel',
+        'sales',
+        'cancel',
+        'Cancel draft sales'
+    )
+ON CONFLICT (permission_key) DO NOTHING;
+
+-- Owner and Admin: all sales permissions.
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id
+FROM roles r
+CROSS JOIN permissions p
+WHERE r.is_system_role = TRUE
+  AND r.role_key IN ('owner', 'admin')
+  AND p.permission_key IN (
+      'sales.view',
+      'sales.create',
+      'sales.update',
+      'sales.checkout',
+      'sales.cancel'
+  )
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+-- Manager: all sales permissions except cancellation.
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id
+FROM roles r
+CROSS JOIN permissions p
+WHERE r.is_system_role = TRUE
+  AND r.role_key = 'manager'
+  AND p.permission_key IN (
+      'sales.view',
+      'sales.create',
+      'sales.update',
+      'sales.checkout'
+  )
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+-- Cashier: create, view, update and checkout.
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id
+FROM roles r
+CROSS JOIN permissions p
+WHERE r.is_system_role = TRUE
+  AND r.role_key = 'cashier'
+  AND p.permission_key IN (
+      'sales.view',
+      'sales.create',
+      'sales.update',
+      'sales.checkout'
+  )
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+===== migrations/20261107155928_sales_returns_refunds_voids.sql =====
+-- Add migration script here
+
+-- Returns, refunds and voids.
+-- Original sales and sale_payments are never deleted or rewritten.
+
+CREATE TABLE sale_returns (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    company_id UUID NOT NULL,
+    sale_id BIGINT NOT NULL,
+    location_id BIGINT NOT NULL,
+    reason TEXT NOT NULL,
+    notes TEXT,
+    idempotency_key UUID NOT NULL,
+    request_fingerprint TEXT NOT NULL,
+    created_by UUID NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT fk_sale_returns_sale
+        FOREIGN KEY (sale_id, company_id)
+        REFERENCES sales(id, company_id),
+
+    CONSTRAINT fk_sale_returns_location
+        FOREIGN KEY (location_id, company_id)
+        REFERENCES inventory_locations(id, company_id),
+
+    CONSTRAINT fk_sale_returns_user
+        FOREIGN KEY (created_by, company_id)
+        REFERENCES users(id, company_id),
+
+    CONSTRAINT uq_sale_returns_idempotency
+        UNIQUE (company_id, idempotency_key),
+
+    CONSTRAINT uq_sale_returns_id_company
+        UNIQUE (id, company_id),
+
+    CONSTRAINT chk_sale_returns_reason
+        CHECK (length(trim(reason)) > 0)
+);
+
+CREATE INDEX idx_sale_returns_sale
+    ON sale_returns(company_id, sale_id, created_at DESC);
+
+
+CREATE TABLE sale_return_items (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    company_id UUID NOT NULL,
+    return_id BIGINT NOT NULL,
+    sale_item_id BIGINT NOT NULL,
+    variant_id BIGINT NOT NULL,
+
+    product_name TEXT NOT NULL,
+    variant_name TEXT NOT NULL,
+    sku TEXT,
+    quantity NUMERIC(19,4) NOT NULL,
+    item_condition VARCHAR(20) NOT NULL,
+    refundable_amount NUMERIC(19,4) NOT NULL,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT fk_return_items_return
+        FOREIGN KEY (return_id, company_id)
+        REFERENCES sale_returns(id, company_id),
+
+    CONSTRAINT fk_return_items_variant
+        FOREIGN KEY (variant_id, company_id)
+        REFERENCES product_variants(id, company_id),
+
+    CONSTRAINT chk_return_item_quantity
+        CHECK (quantity > 0),
+
+    CONSTRAINT chk_return_item_condition
+        CHECK (item_condition IN ('resellable', 'damaged', 'unsellable')),
+
+    CONSTRAINT chk_return_item_refundable
+        CHECK (refundable_amount >= 0)
+);
+
+CREATE INDEX idx_sale_return_items_return
+    ON sale_return_items(company_id, return_id);
+
+CREATE INDEX idx_sale_return_items_sale_item
+    ON sale_return_items(company_id, sale_item_id);
+
+
+CREATE TABLE sale_voids (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    company_id UUID NOT NULL,
+    sale_id BIGINT NOT NULL,
+    reason TEXT NOT NULL,
+    notes TEXT,
+    idempotency_key UUID NOT NULL,
+    request_fingerprint TEXT NOT NULL,
+    created_by UUID NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    
+
+    CONSTRAINT fk_sale_voids_sale
+        FOREIGN KEY (sale_id, company_id)
+        REFERENCES sales(id, company_id),
+
+    CONSTRAINT fk_sale_voids_user
+        FOREIGN KEY (created_by, company_id)
+        REFERENCES users(id, company_id),
+    
+    CONSTRAINT uq_sale_voids_id_company
+        UNIQUE (id, company_id),
+
+    CONSTRAINT uq_sale_voids_sale
+        UNIQUE (company_id, sale_id),
+
+    CONSTRAINT uq_sale_voids_idempotency
+        UNIQUE (company_id, idempotency_key),
+
+    CONSTRAINT chk_sale_voids_reason
+        CHECK (length(trim(reason)) > 0)
+
+);
+
+
+CREATE TABLE sale_refunds (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    company_id UUID NOT NULL,
+    sale_id BIGINT NOT NULL,
+    return_id BIGINT,
+    void_id BIGINT,
+
+    payment_method VARCHAR(30) NOT NULL,
+    amount NUMERIC(19,4) NOT NULL,
+    reference TEXT,
+    notes TEXT,
+
+    idempotency_key UUID NOT NULL,
+    request_fingerprint TEXT NOT NULL,
+    refunded_by UUID NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT fk_sale_refunds_sale
+        FOREIGN KEY (sale_id, company_id)
+        REFERENCES sales(id, company_id),
+
+    CONSTRAINT fk_sale_refunds_return
+        FOREIGN KEY (return_id, company_id)
+        REFERENCES sale_returns(id, company_id),
+
+    CONSTRAINT fk_sale_refunds_void
+        FOREIGN KEY (void_id, company_id)
+        REFERENCES sale_voids(id, company_id),
+
+    CONSTRAINT fk_sale_refunds_user
+        FOREIGN KEY (refunded_by, company_id)
+        REFERENCES users(id, company_id),
+
+    CONSTRAINT uq_sale_refunds_idempotency
+        UNIQUE (company_id, idempotency_key),
+
+    CONSTRAINT chk_sale_refunds_amount
+        CHECK (amount > 0),
+
+    CONSTRAINT chk_sale_refunds_method
+        CHECK (payment_method IN ('cash', 'card', 'mobile_money', 'other')),
+
+    CONSTRAINT chk_sale_refunds_parent
+        CHECK (
+            (return_id IS NOT NULL AND void_id IS NULL)
+            OR
+            (return_id IS NULL AND void_id IS NOT NULL)
+        )
+);
+
+CREATE INDEX idx_sale_refunds_sale
+    ON sale_refunds(company_id, sale_id, created_at DESC);
+
+CREATE INDEX idx_sale_refunds_return
+    ON sale_refunds(company_id, return_id)
+    WHERE return_id IS NOT NULL;
+
+
+
+-- Add the sale return permission.
+INSERT INTO permissions (
+    permission_key,
+    resource,
+    action,
+    description
+)
+VALUES (
+    'sales.return',
+    'sales',
+    'return',
+    'Process sale returns'
+)
+ON CONFLICT (permission_key) DO NOTHING;
+
+
+-- Grant these permissions to Owner, Admin and Manager roles.
+-- This assumes your role names are stored in roles.name.
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id
+FROM roles r
+CROSS JOIN permissions p
+WHERE lower(r.name) IN ('owner', 'admin', 'manager')
+  AND p.permission_key IN ('sales.return', 'sales.refund', 'sales.void')
+ON CONFLICT DO NOTHING;
