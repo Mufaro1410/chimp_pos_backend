@@ -40,6 +40,9 @@ pub struct LoginRequest {
     pub company_id: Uuid,
     pub username: String,
     pub password: String,
+    /// Optional label shown in session lists, e.g. "Front till tablet".
+    #[serde(default)]
+    pub device_label: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -47,6 +50,9 @@ pub struct LoginResponse {
     pub access_token: String,
     pub token_type: String,
     pub expires_in: u64,
+    pub refresh_token: String,
+    pub refresh_expires_in: u64,
+    pub must_change_password: bool,
     pub user: LoginUserResponse,
 }
 

@@ -33,7 +33,11 @@ fn map(e: ReversalError) -> ApiError {
 }
 
 fn respond(o: ReversalOutcome) -> (StatusCode, Json<ReversalOutcome>) {
-    let status = if o.replayed { StatusCode::OK } else { StatusCode::CREATED };
+    let status = if o.replayed {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
     (status, Json(o))
 }
 
@@ -92,9 +96,21 @@ async fn payment_detail(
     customer: bool,
 ) -> ApiResult<serde_json::Value> {
     let (payment, pay_rev, alloc, alloc_rev, doc_col) = if customer {
-        ("customer_payments", "customer_payment_reversals", "customer_payment_allocations", "customer_allocation_reversals", "sale_id")
+        (
+            "customer_payments",
+            "customer_payment_reversals",
+            "customer_payment_allocations",
+            "customer_allocation_reversals",
+            "sale_id",
+        )
     } else {
-        ("supplier_payments", "supplier_payment_reversals", "supplier_payment_allocations", "supplier_allocation_reversals", "invoice_id")
+        (
+            "supplier_payments",
+            "supplier_payment_reversals",
+            "supplier_payment_allocations",
+            "supplier_allocation_reversals",
+            "invoice_id",
+        )
     };
     let sql = format!(
         "SELECT (to_jsonb(p) - 'request_fingerprint') || jsonb_build_object( \

@@ -10,25 +10,25 @@ use crate::{
             list_users, update_role_permissions, update_shop, update_user,
         },
         audit::list_audit_logs,
-        auth::{login_handler, me_handler, refresh_handler, register},
+        auth::{login_handler, register},
+        cash_register::{
+            close_session, create_movement, create_register, get_open_session, get_session,
+            get_session_summary, list_movements, list_registers, open_session,
+        },
         catalog::{
             create_category, create_location, list_categories, list_locations, list_units,
             update_category, update_location,
         },
         expenses::{create_expense, expense_summary, get_expense, list_expenses, void_expense},
-        financial_reversals::{
-            reverse_customer_credit_note, reverse_customer_payment, reverse_supplier_credit_note,
-            reverse_supplier_payment, get_customer_payment, get_supplier_payment,
-        },
-        cash_register::{
-            close_session, create_movement, create_register, get_open_session, get_session,
-            get_session_summary, list_movements, list_registers, open_session,
-        },
         financial_operations::{
             create_supplier_invoice, customer_balance, customer_outstanding, customer_statement,
             get_supplier_invoice, post_customer_credit_note, post_customer_payment,
             post_supplier_credit_note, post_supplier_payment, supplier_balance, supplier_invoices,
             supplier_outstanding, supplier_statement,
+        },
+        financial_reversals::{
+            get_customer_payment, get_supplier_payment, reverse_customer_credit_note,
+            reverse_customer_payment, reverse_supplier_credit_note, reverse_supplier_payment,
         },
         health,
         inventory::{adjust_stock, get_movements, get_stock},
@@ -59,6 +59,10 @@ use crate::{
         },
         sales_returns::{
             create_return, get_void, list_refunds, list_returns, refund_return, void_sale,
+        },
+        session::{
+            admin_reset_password, change_password, forgot_password, logout, logout_all, me,
+            refresh as refresh_session, reset_password,
         },
         trading_parties::{
             create_customer, create_supplier, list_customers, list_suppliers, update_customer,
@@ -356,7 +360,6 @@ pub fn create_routes(state: SharedState) -> Router {
             auth_middleware,
         ));
 
-
     let layers = |router: Router<SharedState>| {
         router
             .route_layer(middleware::from_fn_with_state(
@@ -414,22 +417,68 @@ pub fn create_routes(state: SharedState) -> Router {
             ),
     );
 
+    let sync_routes = layers(
+        Router::new()
+            .route(
+                "/api/v1/sync/bootstrap",
+                get(crate::handlers::sync::bootstrap),
+            )
+            .route(
+                "/api/v1/sync/pull/{entity}",
+                get(crate::handlers::sync::pull),
+            )
+            .route("/api/v1/sync/push", post(crate::handlers::sync::push))
+            .route(
+                "/api/v1/sync/operations",
+                get(crate::handlers::sync::list_operations),
+            )
+            .route(
+                "/api/v1/sync/operations/{id}/retry",
+                post(crate::handlers::sync::retry_operation),
+            )
+            .route(
+                "/api/v1/sync/operations/{id}/dismiss",
+                post(crate::handlers::sync::dismiss_operation),
+            ),
+    );
+
     let audit_routes = layers(Router::new().route("/api/v1/audit-logs", get(list_audit_logs)));
 
     // The identity endpoint requires authentication,
     // but does not require a specific business permission.
     let identity_routes = Router::new()
-        .route("/api/v1/auth/me", get(me_handler))
-        .route("/api/v1/auth/refresh", post(refresh_handler))
+        .route("/api/v1/auth/me", get(me))
+        .route("/api/v1/auth/logout-all", post(logout_all))
+        .route("/api/v1/auth/change-password", post(change_password))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
+        ));
+
+    // Administrators resetting another user's password (needs users.manage).
+    let password_admin_routes = layers(Router::new().route(
+        "/api/v1/users/{id}/reset-password",
+        post(admin_reset_password),
+    ));
+
+    // Public authentication endpoints: rate limited per client IP.
+    let public_auth_routes = Router::new()
+        .route("/api/v1/auth/register", post(register))
+        .route("/api/v1/auth/login", post(login_handler))
+        .route("/api/v1/auth/refresh", post(refresh_session))
+        .route("/api/v1/auth/logout", post(logout))
+        .route("/api/v1/auth/forgot-password", post(forgot_password))
+        .route("/api/v1/auth/reset-password", post(reset_password))
+        .route_layer(middleware::from_fn(
+            crate::utils::rate_limit::auth_rate_limit,
         ));
 
     Router::new()
         .merge(administration_routes)
         .merge(product_routes)
         .merge(identity_routes)
+        .merge(password_admin_routes)
+        .merge(public_auth_routes)
         .merge(purchasing_routes)
         .merge(sales_routes)
         .merge(trading_party_routes)
@@ -441,16 +490,63 @@ pub fn create_routes(state: SharedState) -> Router {
         .merge(expense_routes)
         .merge(reversal_routes)
         .merge(audit_routes)
+        .merge(sync_routes)
         // Public routes.
         .route("/health", get(health::health_check))
-        .route("/api/v1/auth/register", post(register))
-        .route("/api/v1/auth/login", post(login_handler))
+        .layer(axum::extract::DefaultBodyLimit::max(2 * 1024 * 1024))
         .layer(cors_layer())
         .layer(tower_http::timeout::TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
             std::time::Duration::from_secs(30),
         ))
+        .layer(set_header("x-content-type-options", "nosniff"))
+        .layer(set_header("x-frame-options", "DENY"))
+        .layer(set_header("referrer-policy", "no-referrer"))
+        .layer(set_header("cache-control", "no-store"))
+        .layer(set_header(
+            "content-security-policy",
+            "default-src 'none'; frame-ancestors 'none'",
+        ))
+        .layer(tower::util::option_layer(
+            crate::config::is_production().then(|| {
+                set_header(
+                    "strict-transport-security",
+                    "max-age=31536000; includeSubDomains",
+                )
+            }),
+        ))
+        .layer(
+            tower_http::trace::TraceLayer::new_for_http()
+                .make_span_with(
+                    tower_http::trace::DefaultMakeSpan::new().level(tracing::Level::INFO),
+                )
+                .on_response(
+                    tower_http::trace::DefaultOnResponse::new().level(tracing::Level::INFO),
+                ),
+        )
+        .layer(tower_http::request_id::PropagateRequestIdLayer::x_request_id())
+        .layer(tower_http::request_id::SetRequestIdLayer::x_request_id(
+            tower_http::request_id::MakeRequestUuid,
+        ))
+        .layer(tower_http::catch_panic::CatchPanicLayer::custom(
+            |_: Box<dyn std::any::Any + Send>| {
+                tracing::error!("a request handler panicked");
+                axum::response::IntoResponse::into_response(
+                    crate::errors::api_error::ApiError::internal(),
+                )
+            },
+        ))
         .with_state(state)
+}
+
+fn set_header(
+    name: &'static str,
+    value: &'static str,
+) -> tower_http::set_header::SetResponseHeaderLayer<axum::http::HeaderValue> {
+    tower_http::set_header::SetResponseHeaderLayer::overriding(
+        axum::http::HeaderName::from_static(name),
+        axum::http::HeaderValue::from_static(value),
+    )
 }
 
 /// CORS for browser / Tauri clients. Set CORS_ALLOWED_ORIGINS to a comma-separated list

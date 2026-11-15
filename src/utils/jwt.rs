@@ -22,12 +22,25 @@ pub struct Claims {
     pub exp: usize,
     pub jti: String,
     pub iss: String,
+    /// Must equal users.token_version, otherwise the token has been revoked.
+    #[serde(default)]
+    pub tv: i32,
 }
 
+/// Issues a token for a user whose `token_version` is 0.
 pub fn generate_access_token(
     user_id: Uuid,
     company_id: Uuid,
     secret: &str,
+) -> Result<String, AuthError> {
+    generate_access_token_versioned(user_id, company_id, secret, 0)
+}
+
+pub fn generate_access_token_versioned(
+    user_id: Uuid,
+    company_id: Uuid,
+    secret: &str,
+    token_version: i32,
 ) -> Result<String, AuthError> {
     if secret.len() < 32 {
         return Err(AuthError::Internal);
@@ -42,6 +55,7 @@ pub fn generate_access_token(
         exp: now + token_ttl_seconds() as usize,
         jti: Uuid::new_v4().to_string(),
         iss: "chimp-pos".to_string(),
+        tv: token_version,
     };
 
     let mut header = Header::new(Algorithm::HS256);

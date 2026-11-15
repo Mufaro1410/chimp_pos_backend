@@ -29,10 +29,9 @@ fn clean(v: &Option<String>, max: usize) -> ApiResult<Option<String>> {
 fn cash_err(e: CashRegisterError) -> ApiError {
     match e {
         CashRegisterError::Database(e) => e.into(),
-        CashRegisterError::SessionNotOpen => ApiError::conflict(
-            "SESSION_NOT_OPEN",
-            "The cash session is not open",
-        ),
+        CashRegisterError::SessionNotOpen => {
+            ApiError::conflict("SESSION_NOT_OPEN", "The cash session is not open")
+        }
         _ => ApiError::internal(),
     }
 }
@@ -51,11 +50,7 @@ pub async fn get_expense(db: &PgPool, company: Uuid, id: i64) -> ApiResult<Expen
     fetch_one(db, company, id).await
 }
 
-pub async fn list_expenses(
-    db: &PgPool,
-    company: Uuid,
-    q: ExpenseQuery,
-) -> ApiResult<Vec<Expense>> {
+pub async fn list_expenses(db: &PgPool, company: Uuid, q: ExpenseQuery) -> ApiResult<Vec<Expense>> {
     let limit = q.limit.unwrap_or(50);
     let offset = q.offset.unwrap_or(0);
     if !(1..=200).contains(&limit) || offset < 0 {
@@ -66,7 +61,10 @@ pub async fn list_expenses(
     }
     if let Some(s) = &q.status {
         if s != "posted" && s != "voided" {
-            return Err(ApiError::bad_request("INVALID_QUERY", "status must be posted or voided"));
+            return Err(ApiError::bad_request(
+                "INVALID_QUERY",
+                "status must be posted or voided",
+            ));
         }
     }
     let sql = format!(
@@ -81,7 +79,12 @@ pub async fn list_expenses(
         .bind(company)
         .bind(q.from)
         .bind(q.to)
-        .bind(q.category.as_deref().map(str::trim).filter(|s| !s.is_empty()))
+        .bind(
+            q.category
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+        )
         .bind(q.status)
         .bind(limit)
         .bind(offset)
@@ -94,7 +97,10 @@ pub async fn summary(db: &PgPool, company: Uuid, q: ExpenseSummaryQuery) -> ApiR
     let from = q.from.unwrap_or(today.with_day0(0).unwrap_or(today));
     let to = q.to.unwrap_or(today);
     if to < from {
-        return Err(ApiError::bad_request("INVALID_QUERY", "'to' must not be before 'from'"));
+        return Err(ApiError::bad_request(
+            "INVALID_QUERY",
+            "'to' must not be before 'from'",
+        ));
     }
     let v: Value = sqlx::query_scalar(
         "SELECT jsonb_build_object( \
@@ -134,7 +140,10 @@ pub async fn create_expense(
             "Category (max 100 chars) and description are required",
         ));
     }
-    if req.amount <= Decimal::ZERO || req.amount.scale() > 4 || req.amount >= Decimal::from(10u64.pow(14)) {
+    if req.amount <= Decimal::ZERO
+        || req.amount.scale() > 4
+        || req.amount >= Decimal::from(10u64.pow(14))
+    {
         return Err(ApiError::bad_request(
             "INVALID_AMOUNT",
             "Amount must be positive with at most 4 decimal places",
@@ -187,7 +196,10 @@ pub async fn create_expense(
         }
         let expense = fetch_one(&mut *tx, company, id).await?;
         tx.commit().await?;
-        return Ok(ExpenseOutcome { expense, replayed: true });
+        return Ok(ExpenseOutcome {
+            expense,
+            replayed: true,
+        });
     }
 
     let number: i64 = sqlx::query_scalar(
@@ -209,13 +221,23 @@ pub async fn create_expense(
         .fetch_optional(&mut *tx)
         .await?;
         match status.as_deref() {
-            None => return Err(ApiError::not_found("SESSION_NOT_FOUND", "Cash session not found")),
+            None => {
+                return Err(ApiError::not_found(
+                    "SESSION_NOT_FOUND",
+                    "Cash session not found",
+                ));
+            }
             Some("open") => {}
             Some(_) => {
-                return Err(ApiError::conflict("SESSION_NOT_OPEN", "The cash session is not open"));
+                return Err(ApiError::conflict(
+                    "SESSION_NOT_OPEN",
+                    "The cash session is not open",
+                ));
             }
         }
-        let available = current_cash_balance(&mut tx, company, session).await.map_err(cash_err)?;
+        let available = current_cash_balance(&mut tx, company, session)
+            .await
+            .map_err(cash_err)?;
         if available < req.amount {
             return Err(ApiError::conflict(
                 "INSUFFICIENT_CASH",
@@ -268,7 +290,10 @@ pub async fn create_expense(
 
     let expense = fetch_one(&mut *tx, company, id).await?;
     tx.commit().await?;
-    Ok(ExpenseOutcome { expense, replayed: false })
+    Ok(ExpenseOutcome {
+        expense,
+        replayed: false,
+    })
 }
 
 pub async fn void_expense(
@@ -280,7 +305,10 @@ pub async fn void_expense(
 ) -> ApiResult<Expense> {
     let reason = req.reason.trim().to_string();
     if reason.is_empty() || reason.chars().count() > 500 {
-        return Err(ApiError::bad_request("INVALID_REASON", "A reason (max 500 chars) is required"));
+        return Err(ApiError::bad_request(
+            "INVALID_REASON",
+            "A reason (max 500 chars) is required",
+        ));
     }
     let mut tx = db.begin().await?;
     let row: Option<(String, i32, Option<i64>, Option<i64>, Decimal, i64)> = sqlx::query_as(
@@ -294,7 +322,10 @@ pub async fn void_expense(
     let (status, version, session, movement, amount, number) =
         row.ok_or_else(|| ApiError::not_found("EXPENSE_NOT_FOUND", "Expense not found"))?;
     if status == "voided" {
-        return Err(ApiError::conflict("ALREADY_VOIDED", "This expense is already voided"));
+        return Err(ApiError::conflict(
+            "ALREADY_VOIDED",
+            "This expense is already voided",
+        ));
     }
     if version != req.expected_version {
         return Err(ApiError::conflict(

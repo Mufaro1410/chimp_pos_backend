@@ -69,12 +69,15 @@ pub async fn get_stock(
           AND p.track_inventory = TRUE
           AND ($2::BIGINT IS NULL OR sb.location_id = $2)
           AND ($3::BIGINT IS NULL OR sb.variant_id = $3)
-        ORDER BY p.name, pv.name, il.name
+        ORDER BY p.name, pv.name, il.name, sb.location_id
+        LIMIT $4 OFFSET $5
         "#,
     )
     .bind(company_id)
     .bind(query.location_id)
     .bind(query.variant_id)
+    .bind(query.limit.unwrap_or(1000).clamp(1, 5000))
+    .bind(query.offset.unwrap_or(0).max(0))
     .fetch_all(db)
     .await
     .map_err(InventoryError::Database)?;

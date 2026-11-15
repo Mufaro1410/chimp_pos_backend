@@ -42,7 +42,11 @@ pub async fn create_expense(
     Json(req): Json<ExpenseCreate>,
 ) -> ApiResult<(StatusCode, Json<ExpenseOutcome>)> {
     let outcome = svc::create_expense(&s.db, a.company_id, a.user_id, req).await?;
-    let status = if outcome.replayed { StatusCode::OK } else { StatusCode::CREATED };
+    let status = if outcome.replayed {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
     Ok((status, Json(outcome)))
 }
 
@@ -52,5 +56,7 @@ pub async fn void_expense(
     Path(id): Path<i64>,
     Json(req): Json<ExpenseVoid>,
 ) -> ApiResult<Json<Expense>> {
-    Ok(Json(svc::void_expense(&s.db, a.company_id, a.user_id, id, req).await?))
+    Ok(Json(
+        svc::void_expense(&s.db, a.company_id, a.user_id, id, req).await?,
+    ))
 }

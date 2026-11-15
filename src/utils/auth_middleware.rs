@@ -2,6 +2,7 @@ use axum::{
     extract::State,
     http::{Request, StatusCode, header::AUTHORIZATION},
     middleware::Next,
+    response::IntoResponse,
     response::Response,
 };
 
@@ -11,11 +12,29 @@ use uuid::Uuid;
 
 use crate::{models::auth::AuthUser, state::SharedState, utils::jwt::Claims};
 
+/// Endpoints a user may still call while `must_change_password` is set.
+const PASSWORD_CHANGE_ALLOWLIST: &[&str] = &[
+    "/api/v1/auth/me",
+    "/api/v1/auth/change-password",
+    "/api/v1/auth/logout-all",
+];
+
+enum Reject {
+    Status(StatusCode),
+    PasswordChangeRequired,
+}
+
+impl From<StatusCode> for Reject {
+    fn from(s: StatusCode) -> Self {
+        Reject::Status(s)
+    }
+}
+
 async fn authenticate(
     State(state): State<SharedState>,
     mut request: Request<axum::body::Body>,
     next: Next,
-) -> Result<Response, StatusCode> {
+) -> Result<Response, Reject> {
     // 1. Obtain the Authorization header.
     let authorization = request
         .headers()
@@ -29,7 +48,7 @@ async fn authenticate(
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
     if token.is_empty() {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(StatusCode::UNAUTHORIZED.into());
     }
 
     // 3. Configure JWT validation.
@@ -59,9 +78,9 @@ async fn authenticate(
     let token_id = Uuid::parse_str(&claims.jti).map_err(|_| StatusCode::UNAUTHORIZED)?;
 
     // 6. Confirm that the user and company are still active.
-    let account_status = sqlx::query_as::<_, (String, String)>(
+    let account_status = sqlx::query_as::<_, (String, String, bool, i32)>(
         r#"
-        SELECT u.status, c.status
+        SELECT u.status, c.status, u.must_change_password, u.token_version
         FROM users u
         JOIN companies c ON c.id = u.company_id
         WHERE u.id = $1
@@ -74,10 +93,20 @@ async fn authenticate(
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let (user_status, company_status) = account_status.ok_or(StatusCode::UNAUTHORIZED)?;
+    let (user_status, company_status, must_change, token_version) =
+        account_status.ok_or(StatusCode::UNAUTHORIZED)?;
 
     if user_status != "active" || company_status != "active" {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(StatusCode::UNAUTHORIZED.into());
+    }
+
+    // A password change/reset/sign-out-everywhere bumps token_version, killing older tokens.
+    if claims.tv != token_version {
+        return Err(StatusCode::UNAUTHORIZED.into());
+    }
+
+    if must_change && !PASSWORD_CHANGE_ALLOWLIST.contains(&request.uri().path()) {
+        return Err(Reject::PasswordChangeRequired);
     }
 
     // 7. Attach the authenticated identity to this request.
@@ -98,6 +127,12 @@ pub async fn auth_middleware(
 ) -> Response {
     match authenticate(state, request, next).await {
         Ok(response) => response,
-        Err(status) => crate::errors::api_error::status_response(status),
+        Err(Reject::Status(status)) => crate::errors::api_error::status_response(status),
+        Err(Reject::PasswordChangeRequired) => crate::errors::api_error::ApiError::new(
+            StatusCode::FORBIDDEN,
+            "PASSWORD_CHANGE_REQUIRED",
+            "You must change your password before continuing",
+        )
+        .into_response(),
     }
 }

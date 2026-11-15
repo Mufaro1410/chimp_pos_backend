@@ -1,7 +1,9 @@
 pub mod administration;
 pub mod auth;
 pub mod cash_register;
+pub mod catalog;
 pub mod currency;
+pub mod expenses;
 pub mod financial_operations;
 pub mod financial_reversals;
 pub mod inventory;
@@ -10,6 +12,6 @@ pub mod purchasing;
 pub mod reporting;
 pub mod sales;
 pub mod sales_returns;
+pub mod session;
+pub mod sync;
 pub mod trading_parties;
-pub mod catalog;
-pub mod expenses;

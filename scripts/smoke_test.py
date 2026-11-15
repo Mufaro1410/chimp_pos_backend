@@ -61,7 +61,8 @@ cid = reg["company_id"]
 s, lg = call("POST", "/auth/login", {"company_id": cid, "username": "owner", "password": PW}, expect=200)
 T = lg["access_token"]
 call("GET", "/auth/me", token=T, expect=200)
-s, rf = call("POST", "/auth/refresh", token=T, expect=200)
+s, rf = call("POST", "/auth/refresh", {"refresh_token": lg["refresh_token"]}, expect=200)
+T = rf["access_token"]
 call("GET", "/shop", token=T, expect=200)
 call("GET", "/products", expect=401, label="unauthenticated -> 401")
 call("POST", "/auth/login", {"company_id": cid, "username": "owner", "password": "wrong-password-123"}, expect=401, label="bad password -> 401")

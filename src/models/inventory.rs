@@ -40,6 +40,9 @@ pub struct StockMovement {
 pub struct StockQuery {
     pub location_id: Option<i64>,
     pub variant_id: Option<i64>,
+    /// Page size: default 1000, maximum 5000. (Offline clients should use /sync/pull/stock.)
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]

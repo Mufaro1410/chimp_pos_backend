@@ -39,7 +39,9 @@ pub async fn update_category(
     Path(id): Path<i64>,
     Json(req): Json<CategoryUpdate>,
 ) -> ApiResult<Json<Category>> {
-    Ok(Json(svc::update_category(&s.db, a.company_id, id, req).await?))
+    Ok(Json(
+        svc::update_category(&s.db, a.company_id, id, req).await?,
+    ))
 }
 
 pub async fn list_locations(
@@ -66,5 +68,7 @@ pub async fn update_location(
     Path(id): Path<i64>,
     Json(req): Json<LocationUpdate>,
 ) -> ApiResult<Json<Location>> {
-    Ok(Json(svc::update_location(&s.db, a.company_id, id, req).await?))
+    Ok(Json(
+        svc::update_location(&s.db, a.company_id, id, req).await?,
+    ))
 }

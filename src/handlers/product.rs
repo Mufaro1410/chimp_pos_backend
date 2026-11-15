@@ -76,7 +76,8 @@ fn map_error(error: ProductError) -> (StatusCode, Json<ApiErrorResponse>) {
         ProductError::InvalidQuery => (
             StatusCode::BAD_REQUEST,
             "INVALID_QUERY",
-            "Invalid pagination or filter parameters (limit must be 1-100, offset >= 0)".to_string(),
+            "Invalid pagination or filter parameters (limit must be 1-100, offset >= 0)"
+                .to_string(),
         ),
 
         ProductError::NoInventoryLocations => (

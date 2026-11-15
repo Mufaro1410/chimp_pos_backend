@@ -8,10 +8,7 @@ use crate::{
     },
     models::currency::is_valid_currency_code,
     state::AppState,
-    utils::{
-        jwt::generate_access_token,
-        password::{hash_password, verify_password},
-    },
+    utils::password::{hash_password, verify_password},
 };
 
 /// Canonical default permission sets. Keep in sync with the
@@ -58,6 +55,8 @@ pub const MANAGER_PERMISSIONS: &[&str] = &[
     "reports.view",
     "reports.export",
     "users.view",
+    "sync.use",
+    "sync.manage",
 ];
 
 pub const CASHIER_PERMISSIONS: &[&str] = &[
@@ -77,6 +76,7 @@ pub const CASHIER_PERMISSIONS: &[&str] = &[
     "cash_register.open",
     "cash_register.close",
     "cash_register.movement",
+    "sync.use",
 ];
 
 fn map_database_error(error: sqlx::Error) -> AuthError {
@@ -499,26 +499,46 @@ struct LoginUser {
     username: String,
     password_hash: String,
     status: String,
+    locked: bool,
+    must_change_password: bool,
+    token_version: i32,
+}
+
+fn lockout_policy() -> (i32, i32) {
+    let max = std::env::var("LOGIN_MAX_ATTEMPTS")
+        .ok()
+        .and_then(|v| v.parse::<i32>().ok())
+        .filter(|v| *v >= 3)
+        .unwrap_or(5);
+    let minutes = std::env::var("LOGIN_LOCKOUT_MINUTES")
+        .ok()
+        .and_then(|v| v.parse::<i32>().ok())
+        .filter(|v| *v >= 1)
+        .unwrap_or(15);
+    (max, minutes)
+}
+
+/// A valid Argon2 hash used to spend the same time on unknown users as on real ones, so response
+/// timing does not reveal which usernames exist.
+fn dummy_hash() -> &'static str {
+    static HASH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HASH.get_or_init(|| hash_password("timing-equaliser-not-a-real-password").unwrap_or_default())
 }
 
 pub async fn login(state: &AppState, request: LoginRequest) -> Result<LoginResponse, AuthError> {
     // 1. Validate the request.
     let username = request.username.trim().to_lowercase();
 
-    if username.is_empty() || request.password.is_empty() {
+    if username.is_empty() || request.password.is_empty() || request.password.len() > 1024 {
         return Err(AuthError::Unauthorized);
     }
 
     // 2. Find the user within the specified company.
     let user = sqlx::query_as::<_, LoginUser>(
         r#"
-        SELECT
-            id,
-            company_id,
-            name,
-            username,
-            password_hash,
-            status
+        SELECT id, company_id, name, username, password_hash, status,
+               (locked_until IS NOT NULL AND locked_until > NOW()) AS locked,
+               must_change_password, token_version
         FROM users
         WHERE company_id = $1
           AND LOWER(username) = $2
@@ -529,15 +549,21 @@ pub async fn login(state: &AppState, request: LoginRequest) -> Result<LoginRespo
     .bind(&username)
     .fetch_optional(&state.db)
     .await
-    .map_err(map_database_error)?
-    .ok_or(AuthError::Unauthorized)?;
+    .map_err(map_database_error)?;
 
-    // 3. Ensure the account is active.
-    if user.status != "active" {
+    // 3. Unknown or inactive account: burn equivalent hashing time, then fail generically.
+    let Some(user) = user.filter(|u| u.status == "active") else {
+        let password = request.password;
+        let _ = tokio::task::spawn_blocking(move || verify_password(&password, dummy_hash())).await;
         return Err(AuthError::Unauthorized);
+    };
+
+    // 4. Temporarily locked after repeated failures.
+    if user.locked {
+        return Err(AuthError::TooManyAttempts);
     }
 
-    // 4. Verify the password without blocking Tokio's async runtime.
+    // 5. Verify the password without blocking Tokio's async runtime.
     let password = request.password;
     let stored_hash = user.password_hash.clone();
 
@@ -548,32 +574,68 @@ pub async fn login(state: &AppState, request: LoginRequest) -> Result<LoginRespo
             .map_err(AuthError::PasswordHashing)?;
 
     if !password_valid {
+        let (max_attempts, lock_minutes) = lockout_policy();
+        sqlx::query(
+            r#"
+            UPDATE users
+            SET failed_login_attempts = CASE WHEN failed_login_attempts + 1 >= $3 THEN 0 ELSE failed_login_attempts + 1 END,
+                locked_until = CASE WHEN failed_login_attempts + 1 >= $3
+                                    THEN NOW() + make_interval(mins => $4) ELSE locked_until END
+            WHERE id = $1 AND company_id = $2
+            "#,
+        )
+        .bind(user.id)
+        .bind(user.company_id)
+        .bind(max_attempts)
+        .bind(lock_minutes)
+        .execute(&state.db)
+        .await
+        .map_err(map_database_error)?;
         return Err(AuthError::Unauthorized);
     }
 
-    // 5. Update the last login timestamp.
+    // 6. Success: clear lockout state, start a session (refresh-token family).
+    let mut tx = state.db.begin().await.map_err(map_database_error)?;
     sqlx::query(
-        r#"
-        UPDATE users
-        SET last_login_at = NOW()
-        WHERE id = $1
-          AND company_id = $2
-        "#,
+        "UPDATE users SET last_login_at = NOW(), failed_login_attempts = 0, locked_until = NULL          WHERE id = $1 AND company_id = $2",
     )
     .bind(user.id)
     .bind(user.company_id)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await
     .map_err(map_database_error)?;
 
-    // 6. Generate an access token.
-    let access_token = generate_access_token(user.id, user.company_id, &state.jwt_secret)?;
+    let device = request
+        .device_label
+        .as_deref()
+        .map(|d| d.trim().chars().take(100).collect::<String>())
+        .filter(|d| !d.is_empty());
+    let refresh_token = crate::services::session_service::insert_refresh_token(
+        &mut tx,
+        user.company_id,
+        user.id,
+        Uuid::new_v4(),
+        device.as_deref(),
+    )
+    .await
+    .map_err(map_database_error)?;
+    tx.commit().await.map_err(map_database_error)?;
 
-    // 7. Return the login response.
+    // 7. Issue the access token and return the login response.
+    let access_token = crate::utils::jwt::generate_access_token_versioned(
+        user.id,
+        user.company_id,
+        &state.jwt_secret,
+        user.token_version,
+    )?;
+
     Ok(LoginResponse {
         access_token,
         token_type: "Bearer".to_string(),
         expires_in: crate::utils::jwt::token_ttl_seconds(),
+        refresh_token,
+        refresh_expires_in: crate::services::session_service::refresh_ttl_days() as u64 * 86_400,
+        must_change_password: user.must_change_password,
         user: LoginUserResponse {
             id: user.id,
             company_id: user.company_id,

@@ -38,7 +38,10 @@ pub async fn list_audit_logs(
     let limit = q.limit.unwrap_or(50);
     let offset = q.offset.unwrap_or(0);
     if !(1..=200).contains(&limit) || offset < 0 {
-        return Err(ApiError::bad_request("INVALID_QUERY", "limit must be 1-200 and offset >= 0"));
+        return Err(ApiError::bad_request(
+            "INVALID_QUERY",
+            "limit must be 1-200 and offset >= 0",
+        ));
     }
     Ok(Json(
         sqlx::query_as::<_, AuditEntry>(

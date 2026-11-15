@@ -24,6 +24,16 @@ fn required_permission(method: &Method, path: &str) -> Option<&'static str> {
         (&Method::POST, p) if p.starts_with("/api/v1/expenses/") && p.ends_with("/void") => {
             Some("expenses.manage")
         }
+        // ---- password administration
+        (&Method::POST, p) if p.starts_with("/api/v1/users/") && p.ends_with("/reset-password") => {
+            Some("users.manage")
+        }
+        // ---- offline sync
+        (&Method::GET, "/api/v1/sync/bootstrap") => Some("sync.use"),
+        (&Method::GET, p) if p.starts_with("/api/v1/sync/pull/") => Some("sync.use"),
+        (&Method::POST, "/api/v1/sync/push") => Some("sync.use"),
+        (&Method::GET, "/api/v1/sync/operations") => Some("sync.use"),
+        (&Method::POST, p) if p.starts_with("/api/v1/sync/operations/") => Some("sync.manage"),
         // ---- audit
         (&Method::GET, "/api/v1/audit-logs") => Some("audit_logs.view"),
         // ---- financial reversals

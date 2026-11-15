@@ -1,0 +1,6 @@
+# Bare-metal / VM install: Caddy terminates HTTPS (automatic certificates) and forwards to the API.
+# Replace api.example.com. Set TRUST_PROXY=true in the API's environment.
+api.example.com {
+	encode gzip
+	reverse_proxy 127.0.0.1:3000
+}

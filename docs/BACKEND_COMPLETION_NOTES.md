@@ -40,3 +40,32 @@
     cp .env.example .env   # edit values
     cargo run
     python3 scripts/smoke_test.py   # ~110 checks across every module, fresh company each run
+
+---
+# Part 2 (14–15 Nov 2026): offline sync, sessions & passwords, production readiness
+
+## Added
+* **Offline sync** – `GET /sync/bootstrap`, `GET /sync/pull/{locations|categories|products|variants|stock|customers|registers}`,
+  `POST /sync/push` (sale.checkout, expense.create, stock.adjust, customer.payment, cash.movement),
+  `GET /sync/operations`, `POST /sync/operations/{id}/retry` (optionally `run_as_reviewer`), `POST /sync/operations/{id}/dismiss`.
+  Trigger-maintained `updated_at`, keyset delta feeds with a 60 s safety margin, idempotent journal (`sync_operations`).
+  New permissions `sync.use`, `sync.manage`.
+* **Sessions** – rotating refresh tokens with reuse detection, `POST /auth/refresh|logout|logout-all`, `token_version` access-token revocation.
+* **Passwords** – change, admin reset (`users.manage`, owner-protected), forgot/reset tokens (log delivery only), forced change after admin reset,
+  account lockout, per-IP rate limit, timing-safe login, JSON error bodies on all auth endpoints, richer `GET /auth/me` (roles + permissions).
+* **Operations** – CLI (`serve`, `migrate`, `reset-password`), production config guard, security headers, request ids, access logs,
+  panic catching, DB statement/idle timeouts, TLS to PostgreSQL (`tls-rustls`), periodic `ANALYZE`, Dockerfile, compose, systemd, Caddy, backup/restore scripts, CI template.
+* `GET /inventory/stock` now paginated (`limit` default 1000, max 5000, `offset`).
+
+## Bugs found by the new tests
+| Bug | Fix |
+|---|---|
+| Access-token revocation by timestamp was only second-accurate (a token issued in the same second as a password reset survived) | exact per-user `token_version` embedded in tokens |
+| Login returned instantly for unknown users (username enumeration by timing) | equalising dummy hash |
+| Manager "retry" of a price-conflict offline sale could never succeed (ran as the cashier) | `run_as_reviewer` |
+| Stale planner statistics made `/inventory/stock` take 5–7 s and a report hit the 30 s timeout after bulk loads / restores | periodic + post-migrate + post-restore `ANALYZE` |
+| `/inventory/stock` unbounded | pagination |
+| `sqlx::migrate!` not re-embedded when a migration is added | `build.rs` (earlier) |
+
+## Verified
+`scripts/run_all_tests.sh`: smoke (≈110 checks), offline sync, auth/sessions/passwords, concurrency (last unit sold by 8 cashiers, same checkout ×8, same offline op from 8 devices, till overdraw, double session open, lost-update on adjustments). `cargo test`. Backup → restore → boot. Load test (`scripts/load_test.py`).

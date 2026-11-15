@@ -85,8 +85,14 @@ pub type ApiResult<T> = Result<T, ApiError>;
 /// Converts a bare status code (from middleware) into the standard JSON error body.
 pub fn status_response(status: StatusCode) -> Response {
     let (code, message) = match status {
-        StatusCode::UNAUTHORIZED => ("UNAUTHORIZED", "Authentication is required or the token is invalid or expired"),
-        StatusCode::FORBIDDEN => ("PERMISSION_DENIED", "You do not have permission to perform this operation"),
+        StatusCode::UNAUTHORIZED => (
+            "UNAUTHORIZED",
+            "Authentication is required or the token is invalid or expired",
+        ),
+        StatusCode::FORBIDDEN => (
+            "PERMISSION_DENIED",
+            "You do not have permission to perform this operation",
+        ),
         _ => ("INTERNAL_SERVER_ERROR", "An unexpected error occurred"),
     };
     ApiError::new(status, code, message).into_response()

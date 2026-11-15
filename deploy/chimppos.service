@@ -1,0 +1,27 @@
+# /etc/systemd/system/chimppos.service
+[Unit]
+Description=ChimpPOS API
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+User=chimppos
+Group=chimppos
+EnvironmentFile=/etc/chimppos/chimppos.env
+# Apply pending migrations before every start (a failure aborts the start).
+ExecStartPre=/opt/chimppos/chimpPOS_backend migrate
+ExecStart=/opt/chimppos/chimpPOS_backend serve
+Restart=always
+RestartSec=3
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
