@@ -1,0 +1,83 @@
+--- a/src/services/maintenance_service.rs	2026-11-15 10:58:58.000000000 +0000
++++ b/src/services/maintenance_service.rs	2026-11-16 05:51:33.727997028 +0000
+@@ -1,10 +1,28 @@
+ //! Database housekeeping.
+ use sqlx::PgPool;
+ 
+-/// Refreshes planner statistics. PostgreSQL has none after a restore and only stale ones after a
+-/// bulk import; with stale statistics some report/list queries pick catastrophic plans (seconds
+-/// instead of milliseconds). ANALYZE only samples each table, so it is cheap to run regularly.
++/// Refreshes planner statistics for the application's own tables. PostgreSQL has none after a
++/// restore and only stale ones after a bulk import; with stale statistics some report/list queries
++/// pick catastrophic plans (seconds instead of milliseconds). ANALYZE only samples each table, so
++/// it is cheap to run regularly.
++///
++/// Tables are analysed one by one in the `public` schema rather than with a bare `ANALYZE`, which
++/// would also try (and, for a non-superuser, fail noisily) on PostgreSQL's shared system catalogs.
+ pub async fn analyze(db: &PgPool) -> Result<(), sqlx::Error> {
+-    sqlx::query("ANALYZE").execute(db).await?;
++    let tables: Vec<String> = sqlx::query_scalar(
++        "SELECT quote_ident(tablename) FROM pg_tables \
++         WHERE schemaname = 'public' AND tableowner = current_user ORDER BY tablename",
++    )
++    .fetch_all(db)
++    .await?;
++    for table in tables {
++        // One table failing (e.g. dropped concurrently) must not stop the rest.
++        if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(format!("ANALYZE public.{table}")))
++            .execute(db)
++            .await
++        {
++            tracing::warn!("ANALYZE of {table} failed: {e}");
++        }
++    }
+     Ok(())
+ }
+--- a/src/main.rs	2026-11-15 10:58:58.000000000 +0000
++++ b/src/main.rs	2026-11-16 05:51:33.728346251 +0000
+@@ -22,7 +22,11 @@
+ 
+ fn init_logging() {
+     let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+-        tracing_subscriber::EnvFilter::new("warn,chimpPOS_backend=info,tower_http=info")
++        // sqlx::query would log every statement slower than 1 s together with its full text
++        // (migrations are huge); real database errors are returned to the caller anyway.
++        tracing_subscriber::EnvFilter::new(
++            "warn,chimpPOS_backend=info,tower_http=info,sqlx::query=error,sqlx::postgres::notice=error",
++        )
+     });
+     let builder = tracing_subscriber::fmt().with_env_filter(filter);
+     if std::env::var("LOG_FORMAT").map(|v| v.eq_ignore_ascii_case("json")).unwrap_or(false) {
+--- a/.env.example	2026-11-15 11:13:02.000000000 +0000
++++ b/.env.example	2026-11-16 05:51:33.728629573 +0000
+@@ -7,7 +7,7 @@
+ PORT=3000
+ RUN_MIGRATIONS=false           # true = apply pending migrations at startup
+ CORS_ALLOWED_ORIGINS=          # comma list; empty = allow all (development only)
+-RUST_LOG=warn,chimpPOS_backend=info,tower_http=info
++RUST_LOG=warn,chimpPOS_backend=info,tower_http=info,sqlx::query=error,sqlx::postgres::notice=error
+ 
+ # --- needed by the end-to-end test suites ---
+ REFRESH_ROTATION_GRACE_SECONDS=2
+--- a/.env.production.example	2026-11-14 17:48:19.000000000 +0000
++++ b/.env.production.example	2026-11-16 05:51:33.991135683 +0000
+@@ -20,7 +20,7 @@
+ TRUST_PROXY=true
+ 
+ LOG_FORMAT=json
+-RUST_LOG=warn,chimpPOS_backend=info,tower_http=info
++RUST_LOG=warn,chimpPOS_backend=info,tower_http=info,sqlx::query=error,sqlx::postgres::notice=error
+ 
+ # Tuning (defaults shown)
+ DB_MAX_CONNECTIONS=10
+--- a/docs/DEPLOYMENT.md	2026-11-15 11:11:28.000000000 +0000
++++ b/docs/DEPLOYMENT.md	2026-11-16 05:51:33.991683831 +0000
+@@ -23,7 +23,7 @@
+ | `DB_MAX_CONNECTIONS` | 10 | statement timeout 30 s and idle-in-transaction timeout 60 s are always applied |
+ | `ANALYZE_INTERVAL_SECONDS` | 300 | planner-statistics refresh (see §7) |
+ | `SYNC_RETENTION_DAYS` | 90 | applied/dismissed offline-journal rows older than this are purged; rejected ones are never purged |
+-| `LOG_FORMAT` / `RUST_LOG` | text / `warn,chimpPOS_backend=info,tower_http=info` | `json` for log shippers |
++| `LOG_FORMAT` / `RUST_LOG` | text / `warn,chimpPOS_backend=info,tower_http=info,sqlx::query=error,sqlx::postgres::notice=error` | `json` for log shippers |
+ | `PASSWORD_RESET_DELIVERY` | (off) | `log` is development only and is **refused in production** |
+ 
+ In production the server refuses to start if: `JWT_SECRET` is short or looks like a placeholder, `CORS_ALLOWED_ORIGINS` is empty or contains `*`, or reset delivery is `log`.

@@ -22,7 +22,11 @@ USAGE:
 
 fn init_logging() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        tracing_subscriber::EnvFilter::new("warn,chimpPOS_backend=info,tower_http=info")
+        // sqlx::query would log every statement slower than 1 s together with its full text
+        // (migrations are huge); real database errors are returned to the caller anyway.
+        tracing_subscriber::EnvFilter::new(
+            "warn,chimpPOS_backend=info,tower_http=info,sqlx::query=error,sqlx::postgres::notice=error",
+        )
     });
     let builder = tracing_subscriber::fmt().with_env_filter(filter);
     if std::env::var("LOG_FORMAT")
