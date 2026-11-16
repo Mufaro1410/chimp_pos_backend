@@ -4,7 +4,8 @@ use sqlx::{PgPool, postgres::PgPoolOptions};
 use tokio::net::TcpListener;
 
 use chimpPOS_backend::{
-    config, routes,
+    config,
+    routes,
     services::{maintenance_service, session_service},
     state::AppState,
 };
